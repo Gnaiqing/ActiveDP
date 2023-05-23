@@ -23,9 +23,10 @@ if __name__ == "__main__":
     # paths
     parser.add_argument('--root_dir', type=str, default='./')
     parser.add_argument('--save_dir', type=str, default='results')
-    parser.add_argument('--data_dir', type=str, default="data")
+    parser.add_argument('--data_dir', type=str, default="../ws_data")
     # dataset settings
     parser.add_argument('--dataset', type=str, default='youtube')
+    parser.add_argument('--dataset-sample-size', type=int, default=None)
     parser.add_argument('--test-ratio', type=float, default=0.1)
     parser.add_argument('--valid-ratio', type=float, default=0.1)
     parser.add_argument('--feature', type=str, default='tfidf')
@@ -74,6 +75,7 @@ if __name__ == "__main__":
                                                            dataset_name=args.dataset,
                                                            valid_ratio=args.valid_ratio,
                                                            test_ratio=args.test_ratio,
+                                                           sample_size=args.dataset_sample_size,
                                                            stemmer=args.stemmer,
                                                            max_ngram=args.max_ngram,
                                                            min_df=args.min_df,
@@ -88,12 +90,14 @@ if __name__ == "__main__":
             project="icws",
             config={
                 "dataset": args.dataset,
+                "dataset-sample-size": args.dataset_sample_size,
                 "sampler": args.sampler,
                 "agent": args.agent,
                 "acc-threshold": args.acc_threshold,
                 "causal-filter": args.causal_filter,
                 "causal-warmup": args.warmup_size,
                 "csd-method": args.csd_method,
+                "ci-alpha": args.ci_alpha,
                 "bootstrap": args.bootstrap,
                 "label-model": args.label_model,
                 "end-model": args.end_model,

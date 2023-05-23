@@ -357,8 +357,8 @@ def tr_val_te_split(xs, ys, test_ratio, valid_ratio, rand_state):
             xs[test_idxs], ys[test_idxs], train_idxs, valid_idxs, test_idxs)
 
 
-def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, stemmer="porter",
-              feature="tfidf", max_ngram=1, max_df=1.0, min_df=1, max_features=None):
+def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_size=None,
+              stemmer="porter", feature="tfidf", max_ngram=1, max_df=1.0, min_df=1, max_features=None):
     """
     Load dataset and split it
     :param data_root: dataset directory path
@@ -470,6 +470,15 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, stemmer=
         label_names = None
 
     rand_state = np.random.default_rng(seed)
+    if sample_size is not None and len(labels) > sample_size:
+        # sample the dataset
+        selected_indices = rand_state.choice(len(labels), size=sample_size, replace=False)
+        labels = labels[selected_indices]
+        if dataset_type == "text":
+            raw_texts = raw_texts[selected_indices]
+        else:
+            xs = xs[selected_indices, :]
+
     if dataset_type == "text":
         train_xs_text, train_ys, valid_xs_text, valid_ys, test_xs_text, test_ys, train_idxs, valid_idxs, test_idxs = \
             tr_val_te_split(raw_texts, labels, test_ratio, valid_ratio, rand_state)
@@ -514,7 +523,7 @@ def filter_abstain(L, ys):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_root", type=str, default="data/")
+    parser.add_argument("--data_root", type=str, default="../ws_data/")
     parser.add_argument("--dataset_name", type=str, default="youtube")
     parser.add_argument("--valid_ratio", type=float, default=0.1)
     parser.add_argument("--test_ratio", type=float, default=0.1)
