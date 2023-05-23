@@ -369,14 +369,14 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, stemmer=
     :param params: parameters for processing text data
     :return:
     """
-    if dataset_name in ["youtube", "IMDB"]:
+    if dataset_name in ["Youtube", "IMDB", "Yelp", "Amazon", "Amazon-short", "Agnews"]:
         dataset_type = "text"
     elif dataset_name in []:
         dataset_type = "discrete"
     else:
         raise ValueError(f"Dataset {dataset_name} not supported.")
 
-    if dataset_name == "youtube":
+    if dataset_name == "Youtube":
         data_dir = os.path.join(data_root, "spam/data")
         files = ['Youtube01-Psy.csv', 'Youtube02-KatyPerry.csv', 'Youtube03-LMFAO.csv',
                  'Youtube04-Eminem.csv', 'Youtube05-Shakira.csv']
@@ -417,6 +417,52 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, stemmer=
         raw_texts = pos_texts + neg_texts
         labels = [1] * len(pos_texts) + [0] * len(neg_texts)
         label_names = ["negative", "positive"]
+
+    elif dataset_name == "Yelp":
+        train_path = os.path.join(data_root, "yelp_review_polarity_csv/train.csv")
+        test_path = os.path.join(data_root, "yelp_review_polarity_csv/test.csv")
+        df_train = pd.read_csv(train_path, sep=',', header=None, encoding='utf-8-sig')
+        df_test = pd.read_csv(test_path, sep=',', header=None, encoding='utf-8-sig')
+        df_all = pd.concat([df_train, df_test])
+        df = df_all.to_numpy()
+        raw_texts = df[:, 1]
+        labels = df[:, 0].astype(int) - 1
+        label_names = ["negative", "positive"]
+
+    elif dataset_name == "Amazon":
+        train_path = os.path.join(data_root, "amazon_review_polarity_csv/train.csv")
+        test_path = os.path.join(data_root, "amazon_review_polarity_csv/test.csv")
+        df_train = pd.read_csv(train_path, sep=',', header=None, encoding='utf-8-sig')
+        df_test = pd.read_csv(test_path, sep=',', header=None, encoding='utf-8-sig')
+        df_all = pd.concat([df_train, df_test])
+        df = df_all.to_numpy()
+        raw_texts = df[:, 2]
+        labels = df[:, 0].astype(int) - 1
+        label_names = ["negative", "positive"]
+
+    elif dataset_name == "Amazon-short":
+        # short version of amazon review that only use title
+        train_path = os.path.join(data_root, "amazon_review_polarity_csv/train.csv")
+        test_path = os.path.join(data_root, "amazon_review_polarity_csv/test.csv")
+        df_train = pd.read_csv(train_path, sep=',', header=None, encoding='utf-8-sig')
+        df_test = pd.read_csv(test_path, sep=',', header=None, encoding='utf-8-sig')
+        df_all = pd.concat([df_train, df_test])
+        df = df_all.to_numpy()
+        raw_texts = df[:, 1]
+        labels = df[:, 0].astype(int) - 1
+        label_names = ["negative", "positive"]
+
+    elif dataset_name == "Agnews":
+        train_path = os.path.join(data_root, "ag_news_csv/train.csv")
+        test_path = os.path.join(data_root, "ag_news_csv/test.csv")
+        df_train = pd.read_csv(train_path, sep=',', header=None, encoding='utf-8-sig')
+        df_test = pd.read_csv(test_path, sep=',', header=None, encoding='utf-8-sig')
+        df_all = pd.concat([df_train, df_test])
+        df = df_all.to_numpy()
+        raw_texts = df[:, 1]
+        labels = df[:, 0].astype(int) - 1
+        label_names = ["World", "Sports", "Business", "Sci/Tech"]
+
     else:
         # TODO: support discrete datasets
         xs = None

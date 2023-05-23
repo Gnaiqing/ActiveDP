@@ -69,6 +69,21 @@ class Sampler:
 
         return lfs
 
+    def create_labeled_dataset(self, features="selected"):
+        """
+        Create labeled dataset using expert annotation
+        :return:
+        """
+        if features == "selected":
+            features = np.arange(self.dataset.n_features())[self.feature_mask]
+        elif features == "all":
+            features = np.arange(self.dataset.n_features())
+
+        subset_idxs = np.array(self.sampled_idxs)
+        subset_labels = np.array(self.sampled_labels)
+        labeled_dataset = self.dataset.create_subset(subset_idxs, features, labels=subset_labels)
+        return labeled_dataset
+
     def create_bootstrap_dataset(self, dataset_size=None, features="selected", strategy="msir"):
         """
         Create bootstrap dataset using labeled subset

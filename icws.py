@@ -41,6 +41,8 @@ if __name__ == "__main__":
     parser.add_argument('--warmup-size', type=int, default=100)
     # sampler settings
     parser.add_argument("--sampler", type=str, default="passive")
+    parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--bs-size", type=int, default=5)
     # agent settings
     parser.add_argument("--agent", type=str, default="simulate")
     parser.add_argument("--max-features", type=int, default=1)
@@ -50,16 +52,16 @@ if __name__ == "__main__":
     parser.add_argument("--zero-feat", action="store_true")
     # causal structure discovery settings
     parser.add_argument("--causal-filter", action="store_true")
-    parser.add_argument("--csd-method", type=str, default="pc")
+    parser.add_argument("--csd-method", type=str, default=None)
     parser.add_argument("--ci-test", type=str, default="discrete")
-    parser.add_argument("--ci-alpha", type=float, default=0.2)
+    parser.add_argument("--ci-alpha", type=float, default=0.05)
     # model settings
     parser.add_argument("--label-model", type=str, default="mv")
     parser.add_argument("--use-soft-labels", action="store_true")
     parser.add_argument("--end-model", type=str, default="logistic")
     # experiment settings
-
-    parser.add_argument('--runs', type=int, nargs='+', default=range(1))
+    parser.add_argument("--display", action="store_true")
+    parser.add_argument('--runs', type=int, nargs='+', default=range(5))
 
     args = parser.parse_args()
     save_dir = f'{args.root_dir}/{args.save_dir}'
@@ -90,7 +92,9 @@ if __name__ == "__main__":
                 "agent": args.agent,
                 "acc-threshold": args.acc_threshold,
                 "causal-filter": args.causal_filter,
+                "causal-warmup": args.warmup_size,
                 "csd-method": args.csd_method,
+                "bootstrap": args.bootstrap,
                 "label-model": args.label_model,
                 "end-model": args.end_model,
                 "group-id": group_id
@@ -113,13 +117,24 @@ if __name__ == "__main__":
             if t % args.train_iter == 0 and t > 0:
                 print("Evaluating after {} iterations".format(t))
                 if args.causal_filter and t >= args.warmup_size:
-                    # only apply causal features in labelling
-                    bs_dataset = sampler.create_bootstrap_dataset()
-                    causal_learner = CausalDiscovery(bs_dataset)
-                    causal_learner.causal_structure_discovery(method=args.csd_method,
-                                                              ci_test=args.ci_test,
-                                                              alpha=args.ci_alpha)
-                    causal_features = causal_learner.get_parents("LABEL")
+                    if args.bootstrap:
+                        causal_features = []
+                        for _ in range(args.bs_size):
+                            bs_dataset = sampler.create_bootstrap_dataset()
+                            causal_learner = CausalDiscovery(bs_dataset)
+                            bs_causal_features = causal_learner.get_neighbor_nodes(method=args.csd_method,
+                                                                                   alpha=args.ci_alpha,
+                                                                                   display=args.display)
+                            causal_features = causal_features + bs_causal_features
+
+                        causal_features = np.unique(causal_features)
+                    else:
+                        labeled_dataset = sampler.create_labeled_dataset()
+                        causal_learner = CausalDiscovery(labeled_dataset)
+                        causal_features = causal_learner.get_neighbor_nodes(method=args.csd_method,
+                                                                            alpha=args.ci_alpha,
+                                                                            display=args.display)
+
                     print("Causal features:", causal_features)
                     causal_feature_indices = []
                     for feature_name in causal_features:
@@ -127,6 +142,7 @@ if __name__ == "__main__":
                         if j != -1:
                             causal_feature_indices.append(j)
 
+                    causal_feature_indices = np.sort(causal_feature_indices)
                     lfs = sampler.create_label_functions(causal_feature_indices)
                 else:
                     lfs = sampler.create_label_functions()
@@ -239,6 +255,7 @@ if __name__ == "__main__":
         print("AVG Test Accuracy: {}".format(avg_test_acc))
         print("AVG Test F1: {}".format(avg_test_f1))
         print("AVG Test AUC: {}".format(avg_test_auc))
+        wandb.finish()
 
 
 
