@@ -69,7 +69,7 @@ class Sampler:
 
         return lfs
 
-    def create_labeled_dataset(self, features="selected"):
+    def create_labeled_dataset(self, features="selected", drop_const_columns=True):
         """
         Create labeled dataset using expert annotation
         :return:
@@ -81,15 +81,17 @@ class Sampler:
 
         subset_idxs = np.array(self.sampled_idxs)
         subset_labels = np.array(self.sampled_labels)
-        labeled_dataset = self.dataset.create_subset(subset_idxs, features, labels=subset_labels)
+        labeled_dataset = self.dataset.create_subset(subset_idxs, features, labels=subset_labels,
+                                                     drop_const_columns=drop_const_columns)
         return labeled_dataset
 
-    def create_bootstrap_dataset(self, dataset_size=None, features="selected", strategy="msir"):
+    def create_bootstrap_dataset(self, dataset_size=None, features="selected", strategy="msir", drop_const_columns=True):
         """
         Create bootstrap dataset using labeled subset
         :param dataset_size: size for bootstrap dataset
         :param features: "selected", or "all"
         :param strategy: "msir" for multiple sampling importance resampling. "passive" for random sampling
+        :param drop_const_columns: whether drop columns with constant value when creating dataset
         :return:
         """
         if strategy == "msir":
@@ -119,7 +121,7 @@ class Sampler:
         elif features == "all":
             features = np.arange(self.dataset.n_features())
 
-        bs_dataset = self.dataset.create_subset(subset_idxs, features, labels=subset_labels)
+        bs_dataset = self.dataset.create_subset(subset_idxs, features, labels=subset_labels, drop_const_columns=drop_const_columns)
         return bs_dataset
 
 

@@ -14,7 +14,9 @@ from csd import CausalDiscovery
 from snorkel.labeling.model import LabelModel, MajorityLabelVoter
 from discriminator import get_discriminator
 from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
+from lf_utils import get_lf_stats
 import matplotlib.pyplot as plt
 
 
@@ -32,7 +34,7 @@ if __name__ == "__main__":
     parser.add_argument('--feature', type=str, default='tfidf')
     # dataset settings: for text dataset processing
     parser.add_argument("--stemmer", type=str, default="porter")
-    parser.add_argument("--min_df", type=int, default=20)
+    parser.add_argument("--min_df", type=int, default=1)
     parser.add_argument("--max_df", type=float, default=0.7)
     parser.add_argument("--max_ngram", type=int, default=1)
     # framework settings
@@ -49,15 +51,18 @@ if __name__ == "__main__":
     parser.add_argument("--max-features", type=int, default=1)
     parser.add_argument("--criterion", type=str, default="acc")
     parser.add_argument("--acc-threshold", type=float, default=0.6)
-    parser.add_argument("--error-rate", type=float, default=0.0)
+    parser.add_argument("--label-error-rate", type=float, default=0.0)
+    parser.add_argument("--feature-error-rate", type=float, default=0.0)
     parser.add_argument("--zero-feat", action="store_true")
     # causal structure discovery settings
     parser.add_argument("--causal-filter", action="store_true")
     parser.add_argument("--csd-method", type=str, default=None)
     parser.add_argument("--ci-test", type=str, default="discrete")
-    parser.add_argument("--ci-alpha", type=float, default=0.05)
+    parser.add_argument("--ci-alpha", type=float, default=0.01)
     # model settings
     parser.add_argument("--label-model", type=str, default="mv")
+    parser.add_argument("--supervised-label-model", type=str, default=None)
+    parser.add_argument("--supervised-feature-selection", type=str, choices=["all", "selected", "causal"], default="selected")
     parser.add_argument("--use-soft-labels", action="store_true")
     parser.add_argument("--end-model", type=str, default="logistic")
     # experiment settings
@@ -89,30 +94,59 @@ if __name__ == "__main__":
         wandb.init(
             project="icws",
             config={
+                # dataset related
                 "dataset": args.dataset,
                 "dataset-sample-size": args.dataset_sample_size,
+                "dataset-valid-ratio": args.valid_ratio,
+                "dataset-test-ratio": args.test_ratio,
+                "dataset-feature": args.feature,
+                "dataset-stemmer": args.stemmer,
+                "dataset-min-df": args.min_df,
+                "dataset-max-df": args.max_df,
+                "dataset-max-ngram": args.max_ngram,
+                # query related
+                "num-query": args.num_query,
+                "query-size": args.query_size,
+                "train-iter": args.train_iter,
+                "warmup-size": args.warmup_size,
+                # sampler settings
                 "sampler": args.sampler,
+                "bootstrap": args.bootstrap,
+                "bootstrap-size": args.bs_size,
+                # agent settings
                 "agent": args.agent,
+                "max-features": args.max_features,
+                "criterion": args.criterion,
                 "acc-threshold": args.acc_threshold,
+                "label-error-rate": args.label_error_rate,
+                "feature-error-rate": args.feature_error_rate,
+                "zero-feat": args.zero_feat,
+                # causal structure discovery settings
                 "causal-filter": args.causal_filter,
                 "causal-warmup": args.warmup_size,
                 "csd-method": args.csd_method,
                 "ci-alpha": args.ci_alpha,
-                "bootstrap": args.bootstrap,
+                # model settings
                 "label-model": args.label_model,
+                "supervised-label-model": args.supervised_label_model,
+                "supervised-feature-selection": args.supervised_feature_selection,
+                "use-soft-labels": args.use_soft_labels,
                 "end-model": args.end_model,
                 "group-id": group_id
             }
         )
 
+        seed_rng = np.random.default_rng(seed=run)
+        seed = seed_rng.choice(10000)
         test_acc_list = []
         test_auc_list = []
         test_f1_list = []
-        sampler = Sampler(dataset=train_dataset, seed=run)
+        sampler = Sampler(dataset=train_dataset, seed=seed)
         agent = SimulateAgent(train_dataset,
-                              run,
+                              seed=seed,
                               max_features=args.max_features,
-                              error_rate=args.error_rate,
+                              label_error_rate=args.label_error_rate,
+                              feature_error_rate=args.feature_error_rate,
                               criterion=args.criterion,
                               acc_threshold=args.acc_threshold,
                               zero_feat=args.zero_feat)
@@ -165,25 +199,89 @@ if __name__ == "__main__":
                             "test_acc": np.nan,
                             "test_auc": np.nan,
                             "test_f1": np.nan,
+                            "lf_acc_avg": np.nan,
+                            "lf_acc_std": np.nan,
+                            "lf_cov_avg": np.nan,
+                            "lf_cov_std": np.nan,
+                            "lf_num": np.nan,
                         }
                     )
                 else:
                     L_train = train_dataset.generate_label_matrix(lfs=lfs)
                     L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
+                    lf_stats = get_lf_stats(L_train, train_dataset.ys)
                     if args.label_model == "mv":
-                        label_model = MajorityLabelVoter()
+                        label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
                     elif args.label_model == "snorkel":
-                        label_model = LabelModel()
+                        label_model = LabelModel(cardinality=train_dataset.n_class)
                     else:
                         raise ValueError(f"Label model {args.label_model} not supported yet.")
 
-                    L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
-                    L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
-                    if args.label_model == "snorkel":
-                        label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered)
+                    if t >= args.warmup_size and args.supervised_label_model is not None:
+                        # use supervised label model instead
+                        if args.bootstrap:
+                            y_tr_predicted_soft_list = []
+                            for _ in range(args.bs_size):
+                                bs_dataset = sampler.create_bootstrap_dataset(features="all", drop_const_columns=False)
+                                if args.supervised_label_model == "DT":
+                                    supervised_label_model = DecisionTreeClassifier()
+                                elif args.supervised_label_model == "LogReg":
+                                    supervised_label_model = LogisticRegression()
+                                else:
+                                    raise ValueError(f"Supervised label model {args.supervised_label_model} not supported.")
 
-                    y_tr_predicted_soft = label_model.predict_proba(L_tr_filtered)
-                    y_tr_predicted = label_model.predict(L_tr_filtered, tie_break_policy="random")
+                                if args.supervised_feature_selection == "causal":
+                                    bs_X = bs_dataset.xs[:, causal_feature_indices]
+                                    train_X = train_dataset.xs[:, causal_feature_indices]
+                                elif args.supervised_feature_selection == "selected":
+                                    bs_X = bs_dataset.xs[:, sampler.feature_mask]
+                                    train_X = train_dataset.xs[:, sampler.feature_mask]
+                                else:
+                                    bs_X = bs_dataset.xs
+                                    train_X = train_dataset.xs
+
+                                bs_y = bs_dataset.ys
+                                supervised_label_model.fit(bs_X, bs_y)
+                                y_tr_predicted_soft = supervised_label_model.predict_proba(train_X)
+                                y_tr_predicted_soft_list.append(y_tr_predicted_soft)
+
+                            y_tr_predicted_soft = np.mean(y_tr_predicted_soft_list, axis=0)
+                            y_tr_predicted = np.argmax(y_tr_predicted_soft, axis=1)
+                            tr_filtered_indices = np.arange(len(y_tr_predicted))
+                            y_tr_filtered = train_dataset.ys
+                        else:
+                            labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
+                            if args.supervised_label_model == "DT":
+                                supervised_label_model = DecisionTreeClassifier(random_state=seed)
+                            elif args.supervised_label_model == "LogReg":
+                                supervised_label_model = LogisticRegression(random_state=seed)
+                            else:
+                                raise ValueError(f"Supervised label model {args.supervised_label_model} not supported.")
+                            if args.supervised_feature_selection == "causal":
+                                labeled_X = labeled_dataset.xs[:, causal_feature_indices]
+                                train_X = train_dataset.xs[:, causal_feature_indices]
+                            elif args.supervised_feature_selection == "selected":
+                                labeled_X = labeled_dataset.xs[:, sampler.feature_mask]
+                                train_X = train_dataset.xs[:, sampler.feature_mask]
+                            else:
+                                labeled_X = labeled_dataset.xs
+                                train_X = train_dataset.xs
+
+                            labeled_y = labeled_dataset.ys
+                            supervised_label_model.fit(labeled_X, labeled_y)
+                            y_tr_predicted_soft = supervised_label_model.predict_proba(train_X)
+                            y_tr_predicted = np.argmax(y_tr_predicted_soft, axis=1)
+                            tr_filtered_indices = np.arange(len(y_tr_predicted))
+                            y_tr_filtered = train_dataset.ys
+
+                    else:
+                        L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
+                        L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
+                        if args.label_model == "snorkel":
+                            label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
+
+                        y_tr_predicted_soft = label_model.predict_proba(L_tr_filtered)
+                        y_tr_predicted = label_model.predict(L_tr_filtered, tie_break_policy="random")
 
                     precision_tr = accuracy_score(y_tr_filtered, y_tr_predicted)
                     coverage_tr = len(y_tr_filtered) / len(train_dataset)
@@ -191,7 +289,7 @@ if __name__ == "__main__":
                     print('Coverage: {}'.format(coverage_tr))
 
                     if args.end_model == "logistic":
-                        end_model = get_discriminator("logistic", args.use_soft_labels)
+                        end_model = get_discriminator("logistic", args.use_soft_labels, seed=seed)
                         # disc_model.tune_params(xs_tr, ys_tr, valid_dataset.xs_feature, valid_dataset.ys, sample_weights)
                         # disc_model.fit(xs_tr, ys_tr, sample_weights)
                     else:
@@ -211,11 +309,13 @@ if __name__ == "__main__":
                     y_test_predicted = end_model.predict(test_features)
                     y_test_proba = end_model.predict_proba(test_features)
                     test_acc = accuracy_score(test_dataset.ys, y_test_predicted)
-                    test_f1 = f1_score(test_dataset.ys, y_test_predicted)
+
                     if test_dataset.n_class == 2:
                         test_auc = roc_auc_score(test_dataset.ys, y_test_proba[:,1])
+                        test_f1 = f1_score(test_dataset.ys, y_test_predicted)
                     else:
-                        test_auc = roc_auc_score(test_dataset.ys, y_test_proba)
+                        test_auc = roc_auc_score(test_dataset.ys, y_test_proba, average="macro", multi_class="ovo")
+                        test_f1 = f1_score(test_dataset.ys, y_test_predicted, average="macro")
 
                     print("Test Accuracy: {}".format(test_acc))
                     print("Test F1: {}".format(test_f1))
@@ -231,6 +331,11 @@ if __name__ == "__main__":
                             "test_acc": test_acc,
                             "test_auc": test_auc,
                             "test_f1": test_f1,
+                            "lf_acc_avg": lf_stats["lf_acc_avg"],
+                            "lf_acc_std": lf_stats["lf_acc_std"],
+                            "lf_cov_avg": lf_stats["lf_cov_avg"],
+                            "lf_cov_std": lf_stats["lf_cov_std"],
+                            "lf_num": lf_stats["lf_num"]
                         }
                     )
 

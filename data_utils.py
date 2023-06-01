@@ -266,7 +266,7 @@ class TextDataset(AbstractDataset):
         else:
             return -1
 
-    def create_subset(self, indices, features, labels=None):
+    def create_subset(self, indices, features, labels=None, drop_const_columns=True):
         """
         Create a sub with subset of instance and features
         :param indices: subset indices
@@ -276,12 +276,14 @@ class TextDataset(AbstractDataset):
         """
         sub_xs = self.xs[indices, :].toarray()
 
-        filtered_features = []
-        for j in features:
-            if np.min(sub_xs[:, j]) != np.max(sub_xs[:, j]):
-                filtered_features.append(j)
+        if drop_const_columns:
+            filtered_features = []
+            for j in features:
+                if np.min(sub_xs[:, j]) != np.max(sub_xs[:, j]):
+                    filtered_features.append(j)
 
-        features = np.array(filtered_features)
+            features = np.array(filtered_features)
+
         sub_xs = sub_xs[:, features]
 
         if labels is None:
@@ -369,7 +371,8 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
     :param params: parameters for processing text data
     :return:
     """
-    if dataset_name in ["Youtube", "IMDB", "Yelp", "Amazon", "Amazon-short", "Agnews"]:
+    if dataset_name in ["Youtube", "IMDB", "Yelp", "Amazon", "Amazon-short", "Agnews", "BiasBios-professor-teacher",
+                        "BiasBios-professor-physician", "BiasBios-journalist-photographer", "BiasBios-painter-architect"]:
         dataset_type = "text"
     elif dataset_name in []:
         dataset_type = "discrete"
@@ -416,6 +419,8 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
 
         raw_texts = pos_texts + neg_texts
         labels = [1] * len(pos_texts) + [0] * len(neg_texts)
+        raw_texts = np.array(raw_texts)
+        labels = np.array(labels)
         label_names = ["negative", "positive"]
 
     elif dataset_name == "Yelp":
@@ -462,6 +467,42 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
         raw_texts = df[:, 1]
         labels = df[:, 0].astype(int) - 1
         label_names = ["World", "Sports", "Business", "Sci/Tech"]
+
+    elif dataset_name == "BiasBios-professor-teacher":
+        data_path = os.path.join(data_root, "iws_datasets/professor_teacher.csv")
+        df = pd.read_csv(data_path, sep=',', header=0, encoding='utf-8-sig')
+        df = df.to_numpy()
+        raw_texts = df[:, 0]
+        labels = df[:, 1].astype(int)
+        labels[labels == -1] = 0
+        label_names = ["professor", "teacher"]
+
+    elif dataset_name == "BiasBios-professor-physician":
+        data_path = os.path.join(data_root, "iws_datasets/professor_physician.csv")
+        df = pd.read_csv(data_path, sep=',', header=0, encoding='utf-8-sig')
+        df = df.to_numpy()
+        raw_texts = df[:, 0]
+        labels = df[:, 1].astype(int)
+        labels[labels == -1] = 0
+        label_names = ["professor", "physician"]
+
+    elif dataset_name == "BiasBios-journalist-photographer":
+        data_path = os.path.join(data_root, "iws_datasets/journalist_photographer.csv")
+        df = pd.read_csv(data_path, sep=',', header=0, encoding='utf-8-sig')
+        df = df.to_numpy()
+        raw_texts = df[:, 0]
+        labels = df[:, 1].astype(int)
+        labels[labels == -1] = 0
+        label_names = ["journalist", "photographer"]
+
+    elif dataset_name == "BiasBios-painter-architect":
+        data_path = os.path.join(data_root, "iws_datasets/painter_architect.csv")
+        df = pd.read_csv(data_path, sep=',', header=0, encoding='utf-8-sig')
+        df = df.to_numpy()
+        raw_texts = df[:, 0]
+        labels = df[:, 1].astype(int)
+        labels[labels == -1] = 0
+        label_names = ["painter", "architect"]
 
     else:
         # TODO: support discrete datasets
@@ -530,7 +571,7 @@ if __name__ == '__main__':
     parser.add_argument("--seed", type=int, default=0)
     # for text dataset processing
     parser.add_argument("--stemmer", type=str, default="porter")
-    parser.add_argument("--min_df", type=int, default=20)
+    parser.add_argument("--min_df", type=int, default=1)
     parser.add_argument("--max_df", type=float, default=0.7)
     parser.add_argument("--max_ngram", type=int, default=1)
 
