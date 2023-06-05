@@ -16,7 +16,7 @@ from discriminator import get_discriminator
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
-from lf_utils import get_lf_stats
+from lf_utils import get_lf_stats, select_al_thresholds, merge_filtered_probs
 import matplotlib.pyplot as plt
 
 
@@ -61,8 +61,9 @@ if __name__ == "__main__":
     parser.add_argument("--ci-alpha", type=float, default=0.01)
     # model settings
     parser.add_argument("--label-model", type=str, default="mv")
-    parser.add_argument("--supervised-label-model", type=str, default=None)
-    parser.add_argument("--supervised-feature-selection", type=str, choices=["all", "selected", "causal"], default="selected")
+    parser.add_argument("--al-model", type=str, default=None)
+    parser.add_argument("--al-feature", type=str, choices=["lm", "em"], default="em")
+    parser.add_argument("--al-threshold", type=str, default="auto")
     parser.add_argument("--use-soft-labels", action="store_true")
     parser.add_argument("--end-model", type=str, default="logistic")
     # experiment settings
@@ -88,7 +89,6 @@ if __name__ == "__main__":
                                                            )
 
     train_dataset.display(split="train")
-
 
     for run in args.runs:
         wandb.init(
@@ -128,13 +128,19 @@ if __name__ == "__main__":
                 "ci-alpha": args.ci_alpha,
                 # model settings
                 "label-model": args.label_model,
-                "supervised-label-model": args.supervised_label_model,
-                "supervised-feature-selection": args.supervised_feature_selection,
+                "al-model": args.al_model,
+                "al-feature": args.al_feature,
+                "al-threshold": args.al_threshold,
                 "use-soft-labels": args.use_soft_labels,
                 "end-model": args.end_model,
                 "group-id": group_id
             }
         )
+        wandb.define_metric("test_acc", summary="mean")
+        wandb.define_metric("test_auc", summary="mean")
+        wandb.define_metric("test_f1", summary="mean")
+        wandb.define_metric("train_precision", summary="mean")
+        wandb.define_metric("train_coverage", summary="mean")
 
         seed_rng = np.random.default_rng(seed=run)
         seed = seed_rng.choice(10000)
@@ -217,71 +223,103 @@ if __name__ == "__main__":
                     else:
                         raise ValueError(f"Label model {args.label_model} not supported yet.")
 
-                    if t >= args.warmup_size and args.supervised_label_model is not None:
-                        # use supervised label model instead
-                        if args.bootstrap:
-                            y_tr_predicted_soft_list = []
-                            for _ in range(args.bs_size):
-                                bs_dataset = sampler.create_bootstrap_dataset(features="all", drop_const_columns=False)
-                                if args.supervised_label_model == "DT":
-                                    supervised_label_model = DecisionTreeClassifier()
-                                elif args.supervised_label_model == "LogReg":
-                                    supervised_label_model = LogisticRegression()
-                                else:
-                                    raise ValueError(f"Supervised label model {args.supervised_label_model} not supported.")
+                    # if t >= args.warmup_size and args.supervised_label_model is not None:
+                    #     # use supervised label model instead
+                    #     if args.bootstrap:
+                    #         y_tr_predicted_soft_list = []
+                    #         for _ in range(args.bs_size):
+                    #             bs_dataset = sampler.create_bootstrap_dataset(features="all", drop_const_columns=False)
+                    #             if args.supervised_label_model == "DT":
+                    #                 supervised_label_model = DecisionTreeClassifier()
+                    #             elif args.supervised_label_model == "LogReg":
+                    #                 supervised_label_model = LogisticRegression()
+                    #             else:
+                    #                 raise ValueError(f"Supervised label model {args.supervised_label_model} not supported.")
+                    #
+                    #             if args.supervised_feature_selection == "causal":
+                    #                 bs_X = bs_dataset.xs[:, causal_feature_indices]
+                    #                 train_X = train_dataset.xs[:, causal_feature_indices]
+                    #             elif args.supervised_feature_selection == "selected":
+                    #                 bs_X = bs_dataset.xs[:, sampler.feature_mask]
+                    #                 train_X = train_dataset.xs[:, sampler.feature_mask]
+                    #             else:
+                    #                 bs_X = bs_dataset.xs
+                    #                 train_X = train_dataset.xs
+                    #
+                    #             bs_y = bs_dataset.ys
+                    #             supervised_label_model.fit(bs_X, bs_y)
+                    #             y_tr_predicted_soft = supervised_label_model.predict_proba(train_X)
+                    #             y_tr_predicted_soft_list.append(y_tr_predicted_soft)
+                    #
+                    #         y_tr_predicted_soft = np.mean(y_tr_predicted_soft_list, axis=0)
+                    #         y_tr_predicted = np.argmax(y_tr_predicted_soft, axis=1)
+                    #         tr_filtered_indices = np.arange(len(y_tr_predicted))
+                    #         y_tr_filtered = train_dataset.ys
+                    #     else:
+                    #         labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
+                    #         if args.supervised_label_model == "DT":
+                    #             supervised_label_model = DecisionTreeClassifier(random_state=seed)
+                    #         elif args.supervised_label_model == "LogReg":
+                    #             supervised_label_model = LogisticRegression(random_state=seed)
+                    #         else:
+                    #             raise ValueError(f"Supervised label model {args.supervised_label_model} not supported.")
+                    #         if args.supervised_feature_selection == "causal":
+                    #             labeled_X = labeled_dataset.xs[:, causal_feature_indices]
+                    #             train_X = train_dataset.xs[:, causal_feature_indices]
+                    #         elif args.supervised_feature_selection == "selected":
+                    #             labeled_X = labeled_dataset.xs[:, sampler.feature_mask]
+                    #             train_X = train_dataset.xs[:, sampler.feature_mask]
+                    #         else:
+                    #             labeled_X = labeled_dataset.xs
+                    #             train_X = train_dataset.xs
+                    #
+                    #         labeled_y = labeled_dataset.ys
+                    #         supervised_label_model.fit(labeled_X, labeled_y)
+                    #         y_tr_predicted_soft = supervised_label_model.predict_proba(train_X)
+                    #         y_tr_predicted = np.argmax(y_tr_predicted_soft, axis=1)
+                    #         tr_filtered_indices = np.arange(len(y_tr_predicted))
+                    #         y_tr_filtered = train_dataset.ys
 
-                                if args.supervised_feature_selection == "causal":
-                                    bs_X = bs_dataset.xs[:, causal_feature_indices]
-                                    train_X = train_dataset.xs[:, causal_feature_indices]
-                                elif args.supervised_feature_selection == "selected":
-                                    bs_X = bs_dataset.xs[:, sampler.feature_mask]
-                                    train_X = train_dataset.xs[:, sampler.feature_mask]
-                                else:
-                                    bs_X = bs_dataset.xs
-                                    train_X = train_dataset.xs
+                    L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
+                    L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
+                    if args.label_model == "snorkel":
+                        label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
 
-                                bs_y = bs_dataset.ys
-                                supervised_label_model.fit(bs_X, bs_y)
-                                y_tr_predicted_soft = supervised_label_model.predict_proba(train_X)
-                                y_tr_predicted_soft_list.append(y_tr_predicted_soft)
+                    y_tr_predicted_soft = label_model.predict_proba(L_tr_filtered)
+                    y_tr_predicted = label_model.predict(L_tr_filtered, tie_break_policy="random")
 
-                            y_tr_predicted_soft = np.mean(y_tr_predicted_soft_list, axis=0)
-                            y_tr_predicted = np.argmax(y_tr_predicted_soft, axis=1)
-                            tr_filtered_indices = np.arange(len(y_tr_predicted))
-                            y_tr_filtered = train_dataset.ys
+                    if t >= args.warmup_size and args.al_model is not None:
+                        # combine AL model with PWS model
+                        if args.al_model == "logistic":
+                            al_model = LogisticRegression(random_state=seed)
+                        elif args.al_model == "decision-tree":
+                            al_model = DecisionTreeClassifier(random_state=seed)
                         else:
-                            labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
-                            if args.supervised_label_model == "DT":
-                                supervised_label_model = DecisionTreeClassifier(random_state=seed)
-                            elif args.supervised_label_model == "LogReg":
-                                supervised_label_model = LogisticRegression(random_state=seed)
+                            raise ValueError(f"AL model {args.al_model} not supported.")
+
+                        # TODO: consider bootstrap here
+                        labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
+                        if args.al_feature == "lm":
+                            al_model.fit(labeled_dataset.xs, labeled_dataset.ys)
+                        else:
+                            al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
+
+                        if args.al_threshold == "auto":
+                            # use validation set to choose threshold
+                            if args.al_feature == "lm":
+                                tr_features = train_dataset.xs
+                                val_features = valid_dataset.xs
                             else:
-                                raise ValueError(f"Supervised label model {args.supervised_label_model} not supported.")
-                            if args.supervised_feature_selection == "causal":
-                                labeled_X = labeled_dataset.xs[:, causal_feature_indices]
-                                train_X = train_dataset.xs[:, causal_feature_indices]
-                            elif args.supervised_feature_selection == "selected":
-                                labeled_X = labeled_dataset.xs[:, sampler.feature_mask]
-                                train_X = train_dataset.xs[:, sampler.feature_mask]
-                            else:
-                                labeled_X = labeled_dataset.xs
-                                train_X = train_dataset.xs
-
-                            labeled_y = labeled_dataset.ys
-                            supervised_label_model.fit(labeled_X, labeled_y)
-                            y_tr_predicted_soft = supervised_label_model.predict_proba(train_X)
-                            y_tr_predicted = np.argmax(y_tr_predicted_soft, axis=1)
-                            tr_filtered_indices = np.arange(len(y_tr_predicted))
-                            y_tr_filtered = train_dataset.ys
-
-                    else:
-                        L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
-                        L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
-                        if args.label_model == "snorkel":
-                            label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
-
-                        y_tr_predicted_soft = label_model.predict_proba(L_tr_filtered)
-                        y_tr_predicted = label_model.predict(L_tr_filtered, tie_break_policy="random")
+                                tr_features = train_dataset.xs_feature
+                                val_features = valid_dataset.xs_feature
+                            val_labels = valid_dataset.ys
+                            al_val_probs = al_model.predict_proba(val_features)
+                            dp_val_preds = label_model.predict(L_val_filtered)
+                            theta = select_al_thresholds(al_val_probs, dp_val_preds, val_filtered_indices, val_labels)
+                            al_tr_probs = al_model.predict_proba(tr_features)
+                            y_tr_predicted_soft, y_tr_predicted, tr_filtered_indices = merge_filtered_probs(al_tr_probs,
+                                                 y_tr_predicted_soft, y_tr_predicted, tr_filtered_indices, theta)
+                            y_tr_filtered = train_dataset.ys[tr_filtered_indices]
 
                     precision_tr = accuracy_score(y_tr_filtered, y_tr_predicted)
                     coverage_tr = len(y_tr_filtered) / len(train_dataset)

@@ -12,6 +12,7 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import StandardScaler
 from sentence_transformers import SentenceTransformer
+from scipy import sparse
 import pdb
 import nltk
 from nltk.stem import PorterStemmer
@@ -274,8 +275,15 @@ class TextDataset(AbstractDataset):
         :param labels: subset labels. If set, the original ys will be replaced
         :return:
         """
-        sub_xs = self.xs[indices, :].toarray()
+        sub_xs_text = self.xs_text[indices]
+        if labels is None:
+            sub_ys = self.ys[indices]
+        else:
+            sub_ys = labels
+        subset = TextDataset(sub_xs_text, sub_ys, self.dataset_name, label_names=self.label_names,
+                             count_vectorizer=self.count_vectorizer, pipeline=self.pipeline)
 
+        sub_xs = self.xs[indices, :].toarray()
         if drop_const_columns:
             filtered_features = []
             for j in features:
@@ -285,21 +293,14 @@ class TextDataset(AbstractDataset):
             features = np.array(filtered_features)
 
         sub_xs = sub_xs[:, features]
-
-        if labels is None:
-            sub_ys = self.ys[indices]
-        else:
-            sub_ys = labels
-
-
+        subset.xs = sparse.csr_matrix(sub_xs)
         if self.feature_names is not None:
             feature_names = self.feature_names[features]
         else:
             feature_names = None
+        subset.feature_names = feature_names
 
-        return DiscreteDataset(sub_xs, sub_ys, dataset_name=self.dataset_name,
-                               feature_names=feature_names,
-                               label_names=self.label_names)
+        return subset
 
     def to_dataframe(self):
         df = pd.DataFrame(data=self.xs.toarray(), columns=self.feature_names)
