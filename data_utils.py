@@ -234,11 +234,6 @@ class TextDataset(AbstractDataset):
             self.feature_num = self.xs.shape[1]
             self.feature_names = self.count_vectorizer.get_feature_names_out().astype(str)
 
-        # self.feature_dict = {}
-        # if self.feature_names is not None:
-        #     for i, f in enumerate(self.feature_names):
-        #         self.feature_dict[f] = i
-
         if pipeline is None:
             if feature == 'tfidf':
                 vectorizer = TfidfVectorizer(strip_accents='ascii', stop_words='english', max_df=0.9, max_features=1000)
