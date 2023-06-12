@@ -128,7 +128,7 @@ class UncertainSampler(Sampler):
 
     def sample(self, al_model=None):
         is_candidate = np.repeat(True, len(self.dataset))
-        if self.replace:
+        if self.replace and len(self.sampled_idxs) > 0:
             is_candidate[np.array(self.sampled_idxs)] = False
 
         candidates = np.arange(len(self.dataset))[is_candidate]

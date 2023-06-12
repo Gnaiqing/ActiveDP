@@ -3,13 +3,14 @@ import os
 
 
 datasets = [
+    "Youtube",
     # "IMDB",
     # "Yelp",
     # "Amazon",
     # "BiasBios-professor-teacher",
-    "BiasBios-professor-physician",
-    "BiasBios-journalist-photographer",
-    "BiasBios-painter-architect"
+    # "BiasBios-professor-physician",
+    # "BiasBios-journalist-photographer",
+    # "BiasBios-painter-architect"
 ]
 
 lf_acc_thres = [0.6]
@@ -23,8 +24,10 @@ for dataset in datasets:
         for lm in label_models:
             for al_model in al_models:
                  for filter_method in filter_methods:
-                    cmd = f"python icws.py --dataset {dataset} --dataset-sample-size 3000 --label-model {lm} " \
+                    cmd = f"python icws.py --dataset {dataset} --label-model {lm} " \
                           f"--acc-threshold {lf_acc} "
+                    if dataset in ["Yelp", "Amazon"]:
+                        cmd += " --dataset-sample-size 25000"
                     if al_model is not None:
                         cmd += f" --al-model {al_model}"
                     if filter_method is not None:

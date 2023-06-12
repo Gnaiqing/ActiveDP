@@ -78,6 +78,7 @@ if __name__ == "__main__":
     group_id = wandb.util.generate_id()
     config_dict = vars(args)
     config_dict["group_id"] = group_id
+    config_dict["method"] = "SIDP"
     # load dataset
     train_dataset, valid_dataset, test_dataset = load_data(data_root=data_dir,
                                                            dataset_name=args.dataset,
