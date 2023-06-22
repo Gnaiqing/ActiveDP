@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score
 from snorkel.labeling.model import LabelModel, MajorityLabelVoter
 from data_utils import filter_abstain
+import torch
 
 
 def get_lf_stats(L, labels):
@@ -37,7 +38,8 @@ def check_all_class(lfs, n_class):
     return np.all(class_exist)
 
 
-def check_filter(sampler, label_model_type, filtered_feature_indices, train_dataset, valid_dataset, use_valid_labels, seed):
+def check_filter(sampler, label_model_type, filtered_feature_indices, train_dataset, valid_dataset, use_valid_labels,
+                 seed, device):
     """
     Check whether to use LF filtering or not
     :param sampler:
@@ -59,8 +61,10 @@ def check_filter(sampler, label_model_type, filtered_feature_indices, train_data
     if label_model_type == "mv":
         lm = MajorityLabelVoter(cardinality=train_dataset.n_class)
     elif label_model_type == "snorkel":
-        lm = LabelModel(cardinality=train_dataset.n_class)
-        lm.fit(L_train=L_tr_active,Y_dev=y_val_active, seed=seed)
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        lm = LabelModel(cardinality=train_dataset.n_class, device=device)
+        lm.fit(L_train=L_tr_active, Y_dev=y_val_active, seed=seed)
     else:
         raise ValueError("label model not supported.")
     if use_valid_labels:

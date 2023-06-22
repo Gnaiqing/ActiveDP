@@ -16,46 +16,13 @@ import optuna
 import pdb
 
 
-def train_disc_model(args, xs_tr, ys_tr_soft, ys_tr_hard, xs_tr_unlabeled, valid_dataset, warmup_dataset):
-    # prepare discriminator
-    seed = np.random.randint(1e6)
-    disc_model = get_discriminator(model_type=args.model_type, prob_labels=args.soft_training, seed=seed)
-
-    if args.soft_training:
-        ys_tr = ys_tr_soft[:, 1]
-        ys_warmup = (warmup_dataset.ys == 1).astype(float)
-    else:
-        ys_tr = ys_tr_hard
-        ys_warmup = warmup_dataset.ys
-
-    if xs_tr is None:
-        assert len(warmup_dataset) > 0
-        xs_tr = warmup_dataset.xs_feature
-        ys_tr = ys_warmup
-    else:
-        xs_tr = np.vstack((xs_tr, warmup_dataset.xs_feature))
-        ys_tr = np.hstack((ys_tr, ys_warmup))
-
-    sample_weights = None
-
-    if args.model_type == 'ssl':
-        raise NotImplementedError
-    else:
-        disc_model.tune_params(xs_tr, ys_tr, valid_dataset.xs_feature, valid_dataset.ys, sample_weights)
-        disc_model.fit(xs_tr, ys_tr, sample_weights)
-
-    return disc_model
-
-
-def get_discriminator(model_type, prob_labels, params=None, seed=None):
+def get_discriminator(model_type, prob_labels, input_dim, params=None, seed=None):
     if model_type == 'logistic':
         return LogReg(prob_labels, params, seed)
-    elif model_type == 'torch':
+    elif model_type == 'logistic-torch':
         return LogRegTorch(prob_labels, params, seed)
-    elif model_type == 'ssl':
-        return LogRegEM(params, seed)
-    elif model_type == 'svm':
-        return SVM(params)
+    elif model_type == 'mlp-torch':
+        return TorchMLP(h_sizes=[input_dim, 20, 20])
     else:
         raise ValueError('discriminator model not supported.')
 
@@ -63,13 +30,13 @@ def get_discriminator(model_type, prob_labels, params=None, seed=None):
 class Classifier:
     """Classifier backbone
     """
-    def tune_params(self, x_train, y_train, x_valid, y_valid):
+    def tune_params(self, x_train, y_train, x_valid, y_valid, device=None):
         raise NotImplementedError
 
-    def fit(self, xs, ys):
+    def fit(self, xs, ys, device=None):
         raise NotImplementedError
 
-    def predict(self, xs):
+    def predict(self, xs, device=None):
         raise NotImplementedError
 
 
@@ -91,7 +58,7 @@ class LogReg(Classifier):
         else:
             self.seed = seed
 
-    def tune_params(self, x_train, y_train, x_valid, y_valid, sample_weights=None, scoring='acc'):
+    def tune_params(self, x_train, y_train, x_valid, y_valid, sample_weights=None, scoring='acc', device=None):
         search_space = self.params
 
         if self.prob_labels:
@@ -124,7 +91,7 @@ class LogReg(Classifier):
         self.best_params = study.best_params
 
 
-    def fit(self, xs, ys, sample_weights=None):
+    def fit(self, xs, ys, sample_weights=None, device=None):
         if self.prob_labels:
             xs = np.vstack((xs, xs))
             weights = np.hstack((1.-ys, ys))
@@ -141,16 +108,12 @@ class LogReg(Classifier):
         else:
             raise ValueError('Should perform hyperparameter tuning before fitting')
 
-
-    def predict(self, xs):
+    def predict(self, xs, device=None):
         return self.model.predict(xs)
 
-
-    def predict_proba(self, xs):
+    def predict_proba(self, xs, device=None):
         return self.model.predict_proba(xs)
-        
 
-#### unused modules below ####
 
 class LogRegTorch(Classifier):
     def __init__(self, prob_labels, params=None, seed=None):
@@ -159,37 +122,24 @@ class LogRegTorch(Classifier):
         self.best_params = None
         if params is None:
             params = {
-                'lr': [1e-4, 1e-3, 1e-2],
+                'lr': [1e-3, 1e-2],
                 'l2': [1e-4, 1e-3, 1e-2],
-                'n_epochs': [50],
+                'n_epochs': [100],
                 'patience': [3],
-                'batch_size': [256]
+                'batch_size': [4096]
             }
         self.params = params
-        self.n_trials = 20
+        self.n_trials = 10
 
         if seed is None:
             self.seed = np.random.randint(1e6)
         else:
             self.seed = seed
 
-
-    def _to_torch_labels(self, ys):
-        ys = np.copy(ys)
-        ys[ys==-1] = 0
-        return ys
-
-
-    def tune_params(self, x_train, y_train, x_valid, y_valid, sample_weights=None):
+    def tune_params(self, x_train, y_train, x_valid, y_valid, sample_weights=None, scoring='acc', device=None):
         seed = self.seed
         search_space = self.params
-
-        if not self.prob_labels:
-            y_train = self._to_torch_labels(y_train)
-        y_valid = self._to_torch_labels(y_valid)
-
-        train_dataset = LabeledDataset(x_train, y_train, sample_weights)
-        valid_dataset = LabeledDataset(x_valid, y_valid)
+        train_dataset = LabeledDataset(x_train, y_train, weights=sample_weights)
 
         def objective(trial):
             suggestions = {key: trial.suggest_categorical(key, search_space[key]) for key in search_space}
@@ -197,48 +147,49 @@ class LogRegTorch(Classifier):
 
             torch.manual_seed(seed)
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-            valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
+            model = LogRegTorchBase(input_dim=x_train.shape[1], **suggestions)
+            if device is not None:
+                model = model.to(device)
 
-            model = LogRegTorchBase(input_dim=500, **suggestions)
-            model.fit(train_loader, seed)            
+            model.fit(train_loader, seed, device=device)
+            ys_pred = model.predict_proba(torch.tensor(x_valid, dtype=torch.float), device=device)
+            ys_pred = np.array([np.random.choice(np.where(y == np.max(y))[0]) for y in ys_pred])
 
-            val_loss = 0.
-            for xs_val, ys_val, _ in valid_loader:
-                val_loss += F.binary_cross_entropy_with_logits(model(xs_val), ys_val).item()
-            val_loss /= len(valid_loader)
+            if scoring == 'acc':
+                val_score = accuracy_score(y_valid, ys_pred)
+            elif scoring == 'f1':
+                val_score = f1_score(y_valid, ys_pred)
 
-            return val_loss
+            return val_score
         
-        study = optuna.create_study(sampler=optuna.samplers.GridSampler(search_space), direction='minimize')
+        study = optuna.create_study(sampler=optuna.samplers.GridSampler(search_space), direction='maximize')
         study.optimize(objective, n_trials=self.n_trials)
 
         self.best_params = study.best_params
-    
 
-    def fit(self, xs, ys, sample_weights=None):
+    def fit(self, xs, ys, sample_weights=None, device=None):
         seed = self.seed
-        if not self.prob_labels:
-            ys = self._to_torch_labels(ys)
         dataset = LabeledDataset(xs, ys, sample_weights)
         batch_size = self.best_params.pop('batch_size')
         torch.manual_seed(seed)
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        model = LogRegTorchBase(input_dim=500, **self.best_params)
-        model.fit(data_loader, seed=seed)
+        model = LogRegTorchBase(input_dim=xs.shape[1], **self.best_params)
+        if device is not None:
+            model = model.to(device)
+
+        model.fit(data_loader, seed=seed, device=device)
         self.model = model
 
-
-    def predict(self, xs):
-        ys_pred = self.predict_proba(xs)
+    def predict(self, xs, device=None):
+        ys_pred = self.predict_proba(xs, device=device)
         ys_pred = np.array([np.random.choice(np.where(y==np.max(y))[0]) for y in ys_pred])
-        ys_pred[ys_pred==0] = -1
         return ys_pred
 
-
-    def predict_proba(self, xs):
+    def predict_proba(self, xs, device=None):
         xs = torch.tensor(xs).float()
+        if device is not None:
+            xs = xs.to(device)
         ys_pred = self.model.predict_proba(xs)
-        ys_pred = np.hstack((1.-ys_pred, ys_pred))
         return ys_pred
 
 
@@ -248,14 +199,14 @@ class LogRegTorchBase(nn.Module):
         self.linear_0 = nn.Linear(input_dim, 1)
         self.lr = lr
         self.l2 = l2
-        self.n_epochs= n_epochs
+        self.n_epochs = n_epochs
         self.patience = patience
 
     def forward(self, x):
         logit = self.linear_0(x)
         return logit
 
-    def fit(self, train_loader, seed=None):
+    def fit(self, train_loader, seed=None, device=None):
         if seed is not None:
             torch.manual_seed(seed)
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.l2)
@@ -265,7 +216,12 @@ class LogRegTorchBase(nn.Module):
         for epoch in range(self.n_epochs):
             running_loss = 0.
             for xs_tr, ys_tr, weights in train_loader:
+                if device is not None:
+                    xs_tr, ys_tr, weights = xs_tr.to(device), ys_tr.to(device), weights.to(device)
+
                 optimizer.zero_grad()
+                # loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
+                # loss = loss_fn(self(xs_tr), ys_tr.flatten())
                 loss = F.binary_cross_entropy_with_logits(self(xs_tr), ys_tr, reduction='none')
                 loss = (loss * weights).mean()
                 running_loss += loss.item()
@@ -274,194 +230,195 @@ class LogRegTorchBase(nn.Module):
             running_loss /= len(train_loader)
 
             if pre_loss - running_loss < 1e-4:
-                patience -=1
+                patience -= 1
             else:
                 patience = self.patience
-            
+
+            pre_loss = running_loss
             if patience < 0:
                 break
 
-    def predict_proba(self, xs):
+    def predict_proba(self, xs, device=None):
+        if device is not None:
+            xs = xs.to(device)
         logits = self(xs)
-        ys_pred = torch.sigmoid(logits).detach().numpy()
-        return ys_pred
-
-
-class LogRegEM(Classifier):
-    def __init__(self, params=None, seed=None):
-        self.model = None
-        self.best_params = None
-        if params is None:
-            params = {
-                'lr': [1e-4, 1e-3, 1e-2],
-                'l2': [0.],
-                'alpha': [1e-4, 1e-3, 1e-2, 1e-1],
-                'n_epochs': [200],
-                'patience': [3],
-                'batch_size_l': [5],
-                'batch_size_u': [256]
-            }
-        self.params = params
-        self.n_trials = 100
-
-        if seed is None:
-            self.seed = np.random.randint(1e6)
-        else:
-            self.seed = seed
-
-
-    def _to_torch_labels(self, ys):
-        ys = np.copy(ys)
-        ys[ys==-1] = 0
-        return ys
-
-
-    def tune_params(self, xs_l, ys_l, xs_u, xs_valid, ys_valid, sample_weights=None):
-        seed = self.seed
-        search_space = self.params
-
-        ys_l = self._to_torch_labels(ys_l)
-        ys_valid = self._to_torch_labels(ys_valid)
-
-        labeled_dataset = LabeledDataset(xs_l, ys_l)
-        unlabeled_dataset = UnlabeledDataset(xs_u)
-        valid_dataset = LabeledDataset(xs_valid, ys_valid)
-
-        def objective(trial):
-            suggestions = {key: trial.suggest_categorical(key, search_space[key]) for key in search_space}
-            batch_size_l = suggestions.pop('batch_size_l')
-            batch_size_u = suggestions.pop('batch_size_u')
-            labeled_loader = DataLoader(labeled_dataset, batch_size=batch_size_l, shuffle=True)
-            unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size_u, shuffle=True)
-            valid_loader = DataLoader(valid_dataset, batch_size=batch_size_u, shuffle=False)
-
-            model = LogRegEMBase(input_dim=1000, **suggestions)
-
-            val_loss = model.fit(labeled_loader, unlabeled_loader, valid_loader, seed)            
-
-            return val_loss
-        
-        study = optuna.create_study(sampler=optuna.samplers.GridSampler(search_space), direction='minimize')
-        study.optimize(objective, n_trials=self.n_trials)
-
-        self.best_params = study.best_params
-    
-
-    def fit(self, xs_l, ys_l, xs_u, xs_valid, ys_valid, sample_weights=None):
-        seed = self.seed
-        ys_l = self._to_torch_labels(ys_l)
-        labeled_dataset = LabeledDataset(xs_l, ys_l)
-        unlabeled_dataset = UnlabeledDataset(xs_u)
-        valid_dataset = LabeledDataset(xs_valid, ys_valid)
-        batch_size_l = self.best_params.pop('batch_size_l')
-        batch_size_u = self.best_params.pop('batch_size_u')
-        labeled_loader = DataLoader(labeled_dataset, batch_size=batch_size_l, shuffle=True)
-        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=batch_size_u, shuffle=True)
-        valid_loader = DataLoader(valid_dataset, batch_size=batch_size_u, shuffle=False)
-        model = LogRegEMBase(input_dim=1000, **self.best_params)
-        model.fit(labeled_loader, unlabeled_loader, valid_loader, seed=seed)
-        self.model = model
-
-
-    def predict(self, xs):
-        raise NotImplementedError
-
-
-    def predict_proba(self, xs):
-        xs = torch.tensor(xs).float()
-        ys_pred = self.model.predict_proba(xs)
+        ys_pred = torch.sigmoid(logits).detach().cpu().numpy()
         ys_pred = np.hstack((1.-ys_pred, ys_pred))
         return ys_pred
 
 
-class LogRegEMBase(nn.Module):
-    def __init__(self, input_dim, lr, l2, n_epochs, patience, alpha):
-        super().__init__()
-        self.linear_0 = nn.Linear(input_dim, 1)
-        self.lr = lr
-        self.l2 = l2
-        self.n_epochs= n_epochs
-        self.patience = patience
-        self.alpha = alpha
+# the following end model is adapted from IWS
+class FeedforwardFlexible(torch.nn.Module):
+    def __init__(self, h_sizes, activations):
+        super(FeedforwardFlexible, self).__init__()
+
+        self.layers = torch.nn.ModuleList()
+        for k in range(len(h_sizes)-1):
+            self.layers.append(torch.nn.Linear(h_sizes[k], h_sizes[k+1]))
+            self.layers.append(activations[k])
+
+        self.layers.append(torch.nn.Linear(h_sizes[-1], 1))
+        self.layers.append(torch.nn.Sigmoid())
 
     def forward(self, x):
-        logit = self.linear_0(x)
-        return logit
+        for layer in self.layers:
+            x = layer(x)
+        return x
 
-    def fit(self, labeled_loader, unlabeled_loader, valid_loader=None, seed=None):
-        if seed is not None:
-            torch.manual_seed(seed)
 
-        alpha = self.alpha
-        optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.l2)
-        
-        pre_loss = np.inf
-        best_val_loss = np.inf
-        patience = self.patience
-        best_state = None
-        for epoch in range(self.n_epochs):
-            running_loss = 0.
-            n_batch = 0
-            for (xs_l, ys_l),  xs_u in zip(labeled_loader, unlabeled_loader):
-                optimizer.zero_grad()
-                loss_l = F.binary_cross_entropy_with_logits(self(xs_l), ys_l)
-                ys_pred_u = torch.sigmoid(self(xs_u))
-                loss_u = -(ys_pred_u * torch.log(ys_pred_u+1e-6) + (1-ys_pred_u) * torch.log(1-ys_pred_u+1e-6)).mean()
-                loss = loss_l + alpha * loss_u
-                running_loss += loss.item()
-                n_batch += 1
-                loss.backward()
-                optimizer.step()
+def weight_reset(m):
+    if isinstance(m, torch.nn.Linear):
+        m.reset_parameters()
 
-            running_loss /= n_batch
 
-            if pre_loss - running_loss < 1e-4:
-                patience -=1
+class TorchMLP(Classifier):
+    def __init__(self, h_sizes=[150, 20, 20], activations=[torch.nn.ReLU(), torch.nn.ReLU()], optimizer='Adam',
+                 optimparams={}, nepochs=200):
+        self.model = FeedforwardFlexible(h_sizes, activations).float()
+        self.optimizer = optimizer
+        if optimizer == 'Adam':
+            if optimparams:
+                self.optimparams = optimparams
             else:
-                pre_loss = running_loss
-                best_state = self.state_dict()
-                patience = self.patience
+                self.optimparams = {'lr': 1e-3, 'weight_decay': 1e-4}
 
-            if patience < 0:
-                self.load_state_dict(best_state)
-                break
+        self.epochs = nepochs
 
+    def tune_params(self, x_train, y_train, x_valid, y_valid, device=None):
+        pass
 
+    def fit(self, X, Y, batch_size=None, sample_weights=None, device=None):
+        if device is not None:
+            self.model = self.model.to(device)
 
-        # print(epoch)
-            # if valid_loader is not None:
-            #     val_loss = 0.
-            #     for xs_val, ys_val in valid_loader:
-            #         val_loss += F.binary_cross_entropy_with_logits(self(xs_val), ys_val).item()
-            #     val_loss /= len(valid_loader)
+        tinput = torch.from_numpy(X).to(torch.float)
+        target = torch.from_numpy(Y.reshape(-1, 1))
+        if device is not None:
+            tinput = tinput.to(device)
+            target = target.to(device)
+        tweights = None
+        if sample_weights is not None:
+            tweights = torch.from_numpy(sample_weights.reshape(-1, 1)).to(torch.float)
+            if device is not None:
+                tweights = tweights.to(device)
 
-            #     if val_loss < best_val_loss:
-            #         best_val_loss = val_loss
-            #         best_state = self.state_dict()
-            #         patience = self.patience
-            #     else:
-            #         patience -= 1
-                
-            #     if patience < 0:
-            #         self.load_state_dict(best_state)
-            #         break
+        criterion = torch.nn.BCELoss(reduction='none')
+        self.model.apply(weight_reset)
 
-        # return best_val_loss
-            
-            
+        trainX, trainy = tinput, target
+        trainweight = None
+        if tweights is not None:
+            trainweight = tweights
 
-        if valid_loader is not None:
-            val_loss = 0.
-            for xs_val, ys_val in valid_loader:
-                val_loss += F.binary_cross_entropy_with_logits(self(xs_val), ys_val).item()
-            val_loss /= len(valid_loader)
+        if self.optimizer == 'LBFGS':
+            optimizer = torch.optim.LBFGS(self.model.parameters(),
+                                          lr=1,
+                                          max_iter=400,
+                                          max_eval=15000,
+                                          tolerance_grad=1e-07,
+                                          tolerance_change=1e-04,
+                                          history_size=10,
+                                          line_search_fn=None)
 
-            return val_loss
+            def closure():
+                optimizer.zero_grad()
+                mout = self.model(trainX)
+                closs = criterion(mout, trainy)
+                if tweights is not None:
+                    closs = torch.mul(closs, trainweight).mean()
+                else:
+                    closs = closs.mean()
 
+                closs.backward()
+                return closs
 
-    def predict_proba(self, xs):
-        logits = self(xs)
-        ys_pred = torch.sigmoid(logits).detach().numpy()
+            # only take one step (one epoch)
+            optimizer.step(closure)
+        else:
+            optimizer = None
+            if self.optimizer == 'Adam':
+                optimizer = torch.optim.Adam(self.model.parameters(), **self.optimparams)
+            elif self.optimizer == 'SGD':
+                optimizer = torch.optim.SGD(self.model.parameters(), **self.optimparams)
+            lastloss = None
+            tolcount = 0
+            if batch_size is None:
+                for nep in range(self.epochs):
+
+                    out = self.model(trainX)
+                    loss = criterion(out, trainy.to(torch.float))
+                    if tweights is not None:
+                        loss = torch.mul(loss, trainweight).mean()
+                    else:
+                        loss = loss.mean()
+
+                    # early stopping
+                    if lastloss is None:
+                        lastloss = loss
+                    else:
+                        if lastloss - loss < 1e-04:
+                            tolcount += 1
+                        else:
+                            tolcount = 0
+                        if tolcount > 9:
+                            break
+
+                    optimizer.zero_grad()
+                    loss.backward()
+
+                    optimizer.step()
+            else:
+                N = trainX.size()[0]
+                dostop = False
+                for nep in range(self.epochs):
+                    permutation = torch.randperm(N)
+
+                    for i in range(0, N, batch_size):
+                        optimizer.zero_grad()
+                        indices = permutation[i:i + batch_size]
+                        batch_x, batch_y = trainX[indices], trainy[indices]
+
+                        out = self.model(batch_x)
+                        loss = criterion(out, batch_y)
+                        if tweights is not None:
+                            batch_weight = trainweight[indices]
+                            loss = torch.mul(loss, batch_weight).mean()
+                        else:
+                            loss = loss.mean()
+
+                        # early stopping
+                        if lastloss is None:
+                            lastloss = loss
+                        else:
+                            if lastloss - loss < 1e-04:
+                                tolcount += 1
+                            else:
+                                tolcount = 0
+                            if tolcount > 10:
+                                dostop = True
+                                break
+
+                        loss.backward()
+
+                        optimizer.step()
+                    if dostop:
+                        break
+
+    def predict(self, xs, device=None):
+        ys_pred = self.predict_proba(xs, device=device)
+        ys_pred = np.array([np.random.choice(np.where(y == np.max(y))[0]) for y in ys_pred])
+        return ys_pred
+
+    def predict_proba(self, Xtest, device=None):
+        with torch.no_grad():
+            tXtest = torch.from_numpy(Xtest).to(torch.float)
+            if device is not None:
+                tXtest = tXtest.to(device)
+                preds = self.model(tXtest).data.cpu().numpy()
+            else:
+                preds = self.model(tXtest).data.numpy()
+
+            ys_pred = np.hstack((1. - preds, preds))
         return ys_pred
 
 
@@ -480,54 +437,3 @@ class LabeledDataset(Dataset):
 
     def __len__(self):
         return len(self.xs)
-
-
-class UnlabeledDataset(Dataset):
-    def __init__(self, xs):
-        self.xs = torch.tensor(xs).float()
-    
-    def __getitem__(self, index):
-        return self.xs[index]
-
-    def __len__(self):
-        return len(self.xs)
-
-
-class SVM(Classifier):
-    def __init__(self, params=None):
-        self.model = None
-        self.best_params = None
-        if params is None:
-            params = {
-                'max_iter': [1000],
-                'C':[0.001, 0.01, 0.1, 1, 10, 100],
-            }
-        self.params = params
-
-
-    def tune_params(self, x_train, y_train, x_valid, y_valid):
-        params = self.params
-
-        xs_train_valid = np.vstack((x_train, x_valid))
-        ys_train_valid = np.hstack((y_train, y_valid))
-        split_index = [-1 if i < len(x_train) else 0 for i in range(len(xs_train_valid))]
-        ps = PredefinedSplit(test_fold=split_index)
-
-        estimator = LinearSVC()
-        model = GridSearchCV(estimator, cv=ps, param_grid=params, refit=False)
-        model.fit(xs_train_valid, ys_train_valid)
-        best_params = model.best_params_
-        self.best_params = best_params
-    
-
-    def fit(self, xs, ys):
-        if self.best_params is not None:
-            model = LinearSVC(**self.best_params)
-            model.fit(xs, ys)
-            self.model = model
-        else:
-            raise ValueError('Should perform hyperparameter tuning before fitting')
-
-
-    def predict(self, xs):
-        return self.model.predict(xs)

@@ -5,7 +5,7 @@ from scipy.stats import entropy
 import abc
 
 
-def get_sampler(sampler_type, dataset, seed, explore_method, exploit_method, al_feature, uncertain_type, replace=True):
+def get_sampler(sampler_type, dataset, seed, explore_method, exploit_method, al_feature, uncertain_type, replace=False):
     if sampler_type == "passive":
         return PassiveSampler(dataset, seed, replace=replace)
     elif sampler_type == "uncertain":
@@ -102,17 +102,15 @@ def uncertain_sample(dataset, candidates, al_model, al_feature, uncertain_type="
     candidate_train_probs = train_probs[candidates, :]
     if uncertain_type == "entropy":
         uncertain_score = entropy(candidate_train_probs, axis=1)
-        idx_in_list = np.argmax(uncertain_score)
     elif uncertain_type == "margin":
         candidate_train_probs = np.sort(candidate_train_probs, axis=1)
         uncertain_score = candidate_train_probs[:, -1] - candidate_train_probs[:, -2]
-        idx_in_list = np.argmax(uncertain_score)
     elif uncertain_type == "confidence":
         uncertain_score = 1 - np.max(candidate_train_probs, axis=1)
-        idx_in_list = np.argmax(uncertain_score)
     else:
         raise ValueError("Uncertainty type not supported.")
 
+    idx_in_list = np.argmax(uncertain_score)
     idx = candidates[idx_in_list]
     return idx
 
@@ -128,7 +126,7 @@ class UncertainSampler(Sampler):
 
     def sample(self, al_model=None):
         is_candidate = np.repeat(True, len(self.dataset))
-        if self.replace and len(self.sampled_idxs) > 0:
+        if not self.replace and len(self.sampled_idxs) > 0:
             is_candidate[np.array(self.sampled_idxs)] = False
 
         candidates = np.arange(len(self.dataset))[is_candidate]
@@ -160,7 +158,7 @@ class TwoStageSampler(Sampler):
 
     def sample(self, stage="explore", al_model=None):
         is_candidate = np.repeat(True, len(self.dataset))
-        if self.replace:
+        if not self.replace and len(self.sampled_idxs) > 0:
             is_candidate[np.array(self.sampled_idxs)] = False
 
         candidates = np.arange(len(self.dataset))[is_candidate]

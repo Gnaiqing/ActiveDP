@@ -3,6 +3,7 @@ Scalable Interactive Data Programming
 """
 import sys
 import os
+import torch
 import argparse
 import pandas as pd
 import numpy as np
@@ -67,13 +68,19 @@ if __name__ == "__main__":
     parser.add_argument("--use-soft-labels", action="store_true")
     parser.add_argument("--end-model", type=str, default="logistic")
     # experiment settings
+    parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--version", type=str, default="0.1")
     parser.add_argument("--display", action="store_true")
     parser.add_argument('--runs', type=int, nargs='+', default=range(5))
 
     args = parser.parse_args()
     save_dir = f'{args.root_dir}/{args.save_dir}'
-    data_dir = f'{args.root_dir}/{args.data_dir}'
+    data_dir = args.data_dir
+
+    if args.device == "cuda":
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = 'cpu'
 
     group_id = wandb.util.generate_id()
     config_dict = vars(args)
@@ -106,9 +113,13 @@ if __name__ == "__main__":
 
         seed_rng = np.random.default_rng(seed=run)
         seed = seed_rng.choice(10000)
-        dp_cov_dec = 0
-        dp_coverage_list = []
-        al_coverage_list = []
+
+        if args.sampler == "two-stage":
+            sample_stage = "explore"
+            dp_cov_dec = 0
+            max_dp_coverage = 0
+            dp_coverage_list = []
+
         test_acc_list = []
         test_auc_list = []
         test_f1_list = []
@@ -158,7 +169,8 @@ if __name__ == "__main__":
                         train_dataset=train_dataset,
                         valid_dataset=valid_dataset,
                         use_valid_labels=args.use_valid_labels,
-                        seed=seed
+                        seed=seed,
+                        device=device
                     )
                     L_train = train_dataset.generate_label_matrix(lfs=lfs)
                     L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
@@ -180,7 +192,7 @@ if __name__ == "__main__":
                         if args.label_model == "mv":
                             label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
                         elif args.label_model == "snorkel":
-                            label_model = LabelModel(cardinality=train_dataset.n_class)
+                            label_model = LabelModel(cardinality=train_dataset.n_class, device=device)
                             label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
                         else:
                             raise ValueError(f"Label model {args.label_model} not supported yet.")
@@ -250,29 +262,39 @@ if __name__ == "__main__":
                         dp_coverage = len(y_tr_filtered) / len(train_dataset)
                         al_coverage = 0.0
 
+                    if args.sampler == "two-stage":
+                        dp_coverage_list.append(dp_coverage)
+                        if dp_coverage_list[-1] < max_dp_coverage:
+                            dp_cov_dec += 1
+                        else:
+                            max_dp_coverage = dp_coverage_list[-1]
+                            dp_cov_dec = 0
+
+                        if dp_cov_dec >= 3:
+                            sample_stage = "exploit"
+
                     precision_tr = accuracy_score(y_tr_filtered, y_tr_predicted)
                     coverage_tr = len(y_tr_filtered) / len(train_dataset)
                     print('Recovery Precision: {}'.format(precision_tr))
                     print('Coverage: {}'.format(coverage_tr))
 
-                    if args.end_model == "logistic":
-                        end_model = get_discriminator("logistic", args.use_soft_labels, seed=seed)
-                    else:
-                        raise ValueError(f"End model {args.end_model} not supported yet.")
+                    end_model = get_discriminator(args.end_model, args.use_soft_labels,
+                                                  input_dim=train_dataset.xs_feature.shape[1],
+                                                  seed=seed)
 
                     tr_features = train_dataset.xs_feature[tr_filtered_indices, :]
                     val_features = valid_dataset.xs_feature
                     y_val = valid_dataset.ys
                     if args.use_soft_labels:
-                        end_model.tune_params(tr_features, y_tr_predicted_soft, val_features, y_val)
-                        end_model.fit(tr_features, y_tr_predicted_soft)
+                        end_model.tune_params(tr_features, y_tr_predicted_soft, val_features, y_val, device=device)
+                        end_model.fit(tr_features, y_tr_predicted_soft, device=device)
                     else:
-                        end_model.tune_params(tr_features, y_tr_predicted, val_features, y_val)
-                        end_model.fit(tr_features, y_tr_predicted)
+                        end_model.tune_params(tr_features, y_tr_predicted, val_features, y_val, device=device)
+                        end_model.fit(tr_features, y_tr_predicted, device=device)
 
                     test_features = test_dataset.xs_feature
-                    y_test_predicted = end_model.predict(test_features)
-                    y_test_proba = end_model.predict_proba(test_features)
+                    y_test_predicted = end_model.predict(test_features, device=device)
+                    y_test_proba = end_model.predict_proba(test_features, device=device)
                     test_acc = accuracy_score(test_dataset.ys, y_test_predicted)
 
                     if test_dataset.n_class == 2:
@@ -311,16 +333,6 @@ if __name__ == "__main__":
             elif args.sampler == "uncertain":
                 idx = sampler.sample(al_model=al_model)
             elif args.sampler == "two-stage":
-                sample_stage = "explore"
-
-                if len(dp_coverage_list) > 1 and dp_coverage_list[-1] < dp_coverage_list[-2]:
-                    dp_cov_dec += 1
-                elif dp_cov_dec < 5:
-                    dp_cov_dec = 0
-
-                if dp_cov_dec >= 5:
-                    sample_stage = "exploit"
-
                 idx = sampler.sample(stage=sample_stage, al_model=al_model)
 
             if idx == -1:
@@ -343,12 +355,3 @@ if __name__ == "__main__":
         print("AVG Test F1: {}".format(avg_test_f1))
         print("AVG Test AUC: {}".format(avg_test_auc))
         wandb.finish()
-
-
-
-
-
-
-
-
-
