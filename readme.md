@@ -12,5 +12,6 @@ Required packages:
 * matplotlib
 * nltk
 * cdt
-
+* torch
+* alipy
 

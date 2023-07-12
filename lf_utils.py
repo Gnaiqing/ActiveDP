@@ -84,7 +84,7 @@ def check_filter(sampler, label_model_type, filtered_feature_indices, train_data
     L_valid = valid_dataset.generate_label_matrix(lfs=filtered_lfs)
     L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
     L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
-    if label_model_type == "mv":
+    if label_model_type == "mv" or L_tr_filtered.shape[1] < 3:
         filtered_lm = MajorityLabelVoter(cardinality=train_dataset.n_class)
     elif label_model_type == "snorkel":
         filtered_lm = LabelModel(cardinality=train_dataset.n_class)

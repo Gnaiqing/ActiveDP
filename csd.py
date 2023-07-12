@@ -1,12 +1,10 @@
 """
-Causal structure discovery
+Dependence structure discovery
 """
-import cdt
-import pandas as pd
 from cdt.causality.graph import PC, GES, GIES
-from cdt.independence.graph import ARD, Glasso
+from cdt.independence.graph import ARD, Glasso, DecisionTreeRegression, FSGNN, HSICLasso, LinearSVRL2
 import networkx as nx
-from data_utils import DiscreteDataset, TextDataset, AbstractDataset
+from data_utils import AbstractDataset
 import matplotlib.pyplot as plt
 
 
@@ -48,6 +46,22 @@ class StructureDiscovery:
         elif method == "Glasso":
             obj = Glasso()
             self.output_graph = obj.predict(self.dataset, alpha=alpha)
+            neighbors = list(self.output_graph.adj["LABEL"])
+        elif method == "DT":
+            obj = DecisionTreeRegression()
+            self.output_graph = obj.predict(self.dataset)
+            neighbors = list(self.output_graph.adj["LABEL"])
+        elif method == "FSGNN":
+            obj = FSGNN()
+            self.output_graph = obj.predict(self.dataset, threshold=alpha)
+            neighbors = list(self.output_graph.adj["LABEL"])
+        elif method == "LinearSVRL2":
+            obj = LinearSVRL2()
+            self.output_graph = obj.predict(self.dataset, threshold=alpha)
+            neighbors = list(self.output_graph.adj["LABEL"])
+        elif method == "HSICLasso":
+            obj = HSICLasso()
+            self.output_graph = obj.predict(self.dataset, threshold=alpha)
             neighbors = list(self.output_graph.adj["LABEL"])
         else:
             raise ValueError(f"CSD method {method} not implemented.")

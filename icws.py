@@ -1,16 +1,13 @@
 """
 Scalable Interactive Data Programming
 """
-import sys
-import os
 import torch
 import argparse
-import pandas as pd
 import numpy as np
 import wandb
 from data_utils import load_data, filter_abstain
 from sampler import get_sampler
-from agent import SimulateAgent
+from agent import SimulateAgent, SentimentLexicon
 from csd import StructureDiscovery
 from snorkel.labeling.model import LabelModel, MajorityLabelVoter
 from discriminator import get_discriminator
@@ -18,7 +15,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
 from lf_utils import get_lf_stats, select_al_thresholds, merge_filtered_probs, check_filter, check_all_class
-import matplotlib.pyplot as plt
 
 
 if __name__ == "__main__":
@@ -46,13 +42,13 @@ if __name__ == "__main__":
     parser.add_argument('--warmup-size', type=int, default=100)  # only used when use-valid-label set to false
     # sampler settings
     parser.add_argument("--sampler", type=str, default="passive")
-    parser.add_argument("--explore-method", type=str, default="passive")
-    parser.add_argument("--exploit-method", type=str, default="uncertain")
+    parser.add_argument("--lf-sample-method", type=str, default="passive")
+    parser.add_argument("--al-sample-method", type=str, default="uncertain")
     parser.add_argument("--uncertain-type", type=str, default="entropy")
     # agent settings
     parser.add_argument("--agent", type=str, default="simulate")
     parser.add_argument("--max-features", type=int, default=1)
-    parser.add_argument("--criterion", type=str, default="acc")
+    parser.add_argument("--criterion", type=str, default="acc", choices=["acc", "lexicon"])
     parser.add_argument("--acc-threshold", type=float, default=0.6)
     parser.add_argument("--label-error-rate", type=float, default=0.0)
     parser.add_argument("--feature-error-rate", type=float, default=0.0)
@@ -68,8 +64,8 @@ if __name__ == "__main__":
     parser.add_argument("--use-soft-labels", action="store_true")
     parser.add_argument("--end-model", type=str, default="logistic")
     # experiment settings
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--version", type=str, default="0.1")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--version", type=str, default="0.2")
     parser.add_argument("--display", action="store_true")
     parser.add_argument('--runs', type=int, nargs='+', default=range(5))
 
@@ -77,10 +73,11 @@ if __name__ == "__main__":
     save_dir = f'{args.root_dir}/{args.save_dir}'
     data_dir = args.data_dir
 
-    if args.device == "cuda":
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.device == "cuda" and torch.cuda.is_available():
+        device = torch.device('cuda')
     else:
         device = 'cpu'
+        args.device = 'cpu'
 
     group_id = wandb.util.generate_id()
     config_dict = vars(args)
@@ -114,12 +111,6 @@ if __name__ == "__main__":
         seed_rng = np.random.default_rng(seed=run)
         seed = seed_rng.choice(10000)
 
-        if args.sampler == "two-stage":
-            sample_stage = "explore"
-            dp_cov_dec = 0
-            max_dp_coverage = 0
-            dp_coverage_list = []
-
         test_acc_list = []
         test_auc_list = []
         test_f1_list = []
@@ -127,10 +118,11 @@ if __name__ == "__main__":
         sampler = get_sampler(sampler_type=args.sampler,
                               dataset=train_dataset,
                               seed=seed,
-                              explore_method=args.explore_method,
-                              exploit_method=args.exploit_method,
-                              al_feature=args.al_feature,
-                              uncertain_type=args.uncertain_type)
+                              lf_sample_method=args.lf_sample_method,
+                              al_sample_method=args.al_sample_method,
+                              al_feature=args.al_feature)
+
+        sentiment_lexicon = SentimentLexicon(data_dir)
 
         agent = SimulateAgent(train_dataset,
                               seed=seed,
@@ -139,9 +131,13 @@ if __name__ == "__main__":
                               feature_error_rate=args.feature_error_rate,
                               criterion=args.criterion,
                               acc_threshold=args.acc_threshold,
-                              zero_feat=args.zero_feat)
+                              zero_feat=args.zero_feat,
+                              lexicon=sentiment_lexicon)
 
         al_model = None
+        label_model = None
+        dp_coverage = 1.0
+        al_coverage = 0.0
 
         for t in range(args.num_query + 1):
             if t % args.train_iter == 0 and t > 0:
@@ -262,17 +258,6 @@ if __name__ == "__main__":
                         dp_coverage = len(y_tr_filtered) / len(train_dataset)
                         al_coverage = 0.0
 
-                    if args.sampler == "two-stage":
-                        dp_coverage_list.append(dp_coverage)
-                        if dp_coverage_list[-1] < max_dp_coverage:
-                            dp_cov_dec += 1
-                        else:
-                            max_dp_coverage = dp_coverage_list[-1]
-                            dp_cov_dec = 0
-
-                        if dp_cov_dec >= 3:
-                            sample_stage = "exploit"
-
                     precision_tr = accuracy_score(y_tr_filtered, y_tr_predicted)
                     coverage_tr = len(y_tr_filtered) / len(train_dataset)
                     print('Recovery Precision: {}'.format(precision_tr))
@@ -328,19 +313,59 @@ if __name__ == "__main__":
                         }
                     )
 
-            if args.sampler == "passive":
-                idx = sampler.sample()
-            elif args.sampler == "uncertain":
-                idx = sampler.sample(al_model=al_model)
-            elif args.sampler == "two-stage":
-                idx = sampler.sample(stage=sample_stage, al_model=al_model)
+            if label_model is not None:
+                y_probs = label_model.predict_proba(L_train)
+            else:
+                y_probs = None
 
+            if args.sampler == "Hybrid":
+                al_sample_prob = al_coverage / (al_coverage + dp_coverage)
+                idx = sampler.sample(al_sample_prob=al_sample_prob, al_model=al_model, y_probs=y_probs)
+            elif args.sampler == "SEU":
+                idx = sampler.sample(y_probs=y_probs)
+            else:
+                idx = sampler.sample(al_model=al_model)
             if idx == -1:
                 raise ValueError(f"No remaining data for sampling.")
 
             # query the agent
             label, features = agent.query(idx)
             sampler.update_feedback(idx, label, features)
+
+            # update label model and AL model
+            lfs = sampler.create_label_functions()
+            if not check_all_class(lfs, train_dataset.n_class):
+                label_model = None
+            else:
+                L_train = train_dataset.generate_label_matrix(lfs=lfs)
+                L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
+                lf_stats = get_lf_stats(L_train, train_dataset.ys)
+                L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
+                L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
+
+                if args.label_model == "mv" or len(lfs) < 3:
+                    label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
+                elif args.label_model == "snorkel":
+                    label_model = LabelModel(cardinality=train_dataset.n_class, device=device)
+                    label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
+                else:
+                    raise ValueError(f"Label model {args.label_model} not supported yet.")
+
+            if args.al_model == "logistic":
+                al_model = LogisticRegression(random_state=seed)
+            elif args.al_model == "decision-tree":
+                al_model = DecisionTreeClassifier(random_state=seed)
+            else:
+                raise ValueError(f"AL model {args.al_model} not supported.")
+
+            if t < 10 or len(np.unique(sampler.sampled_labels)) < train_dataset.n_class:
+                al_model = None
+            else:
+                labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
+                if args.al_feature == "tfidf":
+                    al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
+                else:
+                    al_model.fit(labeled_dataset.xs, labeled_dataset.ys)
 
             # display query results
             print("Query: ", train_dataset.xs_text[idx])
