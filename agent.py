@@ -6,6 +6,7 @@ import abc
 import os
 from nltk.stem import PorterStemmer
 
+
 class SentimentLexicon:
     def __init__(self, data_root, stemmer="porter"):
         pos_words_file = os.path.join(data_root, 'opinion_lexicon/positive-words.txt')
@@ -70,11 +71,11 @@ class AbstractAgent(abc.ABC):
 
 
 class SimulateAgent(AbstractAgent):
-    def __init__(self, dataset, seed, max_features=None, label_error_rate=0.0, feature_error_rate=0.0,
+    def __init__(self, dataset, seed, max_features=None, label_error_rate=0.0, lf_error_rate=0.0,
                  criterion="acc", acc_threshold=0.6, zero_feat=False, lexicon=None):
         super(SimulateAgent, self).__init__(dataset, seed)
         self.label_error_rate = label_error_rate  # error rate for providing a wrong label
-        self.feature_error_rate = feature_error_rate  # error rate for giving a feature not indicative of provided label
+        self.lf_error_rate = lf_error_rate  # error rate for providing a LF with accuracy below threshold
         self.criterion = criterion  # criterion for returning features
         self.acc_threshold = acc_threshold  # accuracy threshold for returning features
         self.max_features = max_features  # maximum number of features returned per instance
@@ -99,10 +100,10 @@ class SimulateAgent(AbstractAgent):
             label = self.rng.choice(candidates)
 
         p_feat = self.rng.random()
-        if p_feat >= self.feature_error_rate:
-            is_feature_accurate = True
+        if p_feat >= self.lf_error_rate:
+            lf_accurate = True
         else:
-            is_feature_accurate = False
+            lf_accurate = False
 
         candidate_features = []
         candidate_feature_names = []
@@ -117,18 +118,18 @@ class SimulateAgent(AbstractAgent):
                 if not isinstance(selected, np.ndarray):
                     selected = selected.toarray().flatten()
                 ys = self.dataset.ys[selected]
-                acc = np.mean(ys == label)  # note: this is accuracy based on user provided label.
+                acc = np.mean(ys == label)  # note: the LF is designed based on user provided label.
                 cov = np.mean(selected)
 
-                if is_feature_accurate:
-                    # accuracy above threshold and feature not selected before
+                if lf_accurate:
+                    # the generated LF is better than random
                     if acc >= self.acc_threshold and not self.selected_features[j]:
                         candidate_features.append(j)
                         candidate_feature_names.append(self.dataset.feature_names[j])
                         candidate_accs.append(acc)
                         candidate_covs.append(cov)
                 else:
-                    # select low accuracy features
+                    # the generated LF is worse than random
                     if acc < self.acc_threshold and not self.selected_features[j]:
                         candidate_features.append(j)
                         candidate_feature_names.append(self.dataset.feature_names[j])

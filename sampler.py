@@ -4,7 +4,7 @@ from alipy import ToolBox
 import abc
 
 
-def get_sampler(sampler_type, dataset, seed, lf_sample_method, al_sample_method, al_feature):
+def get_sampler(sampler_type, dataset, seed, lf_sample_method=None, al_sample_method=None, al_feature="tfidf"):
     if sampler_type in ["uncertain", "QBC", "QUIRE", "EER", "density", "LAL"]:
         return ActiveSampler(dataset, al_feature, sampler_type, seed)
     elif sampler_type in ["passive", "count", "SEU"]:
@@ -83,19 +83,6 @@ class LFSampler(Sampler):
         self.sample_method = sample_method
         self.unlabeled_index = np.arange(len(self.dataset))
         self.rng = np.random.default_rng(seed)
-        # record the number of times each feature is observed by expert
-        self.feature_observed_count = np.zeros(self.dataset.feature_num)
-        self.feature_mat = self.dataset.xs.toarray()
-        self.feature_cov = np.mean(self.feature_mat != 0, axis=0)
-        # create weak label matrix for all possible LFs
-        self.wl_mat = []
-
-        for i in range(self.dataset.n_class):
-            wl = - np.ones_like(self.feature_mat)
-            wl[self.feature_mat != 0] = i
-            self.wl_mat.append(wl)
-
-        self.wl_mat = np.hstack(self.wl_mat)
 
     def sample(self, **kwargs):
         is_candidate = np.repeat(True, len(self.dataset))
@@ -108,16 +95,10 @@ class LFSampler(Sampler):
         if len(unlabeled_index) > 1000:
             # subsample to reduce runtime
             unlabeled_index = self.rng.choice(unlabeled_index, size=1000, replace=False)
+            unlabeled_index = np.sort(unlabeled_index)
 
         if self.sample_method == "passive":
             idx = self.rng.choice(unlabeled_index)
-        elif self.sample_method == "count":
-            # explore based on observed count
-            feature_score = self.feature_cov / (self.feature_observed_count + 1)
-            xs_score = np.multiply(self.feature_mat[unlabeled_index,:], feature_score.reshape(1,-1))
-            xs_score = np.sum(xs_score, axis=1)
-            idx = self.rng.choice(unlabeled_index, p=xs_score / np.sum(xs_score))
-            self.feature_observed_count += self.feature_mat[idx, :]
         elif self.sample_method == "SEU":
             # select by expected utility (Nemo)
             assert "y_probs" in kwargs
@@ -127,7 +108,13 @@ class LFSampler(Sampler):
             else:
                 uncertainty = entropy(kwargs["y_probs"], axis=1)[unlabeled_index]
                 y_preds = np.argmax(kwargs["y_probs"], axis=1)[unlabeled_index]
-                wl_mat = self.wl_mat[unlabeled_index,:]
+                feature_mat = self.dataset.xs[unlabeled_index,:].toarray()
+                wl_mat = []
+                for i in range(self.dataset.n_class):
+                    wl = - np.ones_like(feature_mat)
+                    wl[feature_mat != 0] = i
+                    wl_mat.append(wl)
+                wl_mat = np.hstack(wl_mat)
 
                 score = np.zeros_like(wl_mat)
                 score[wl_mat != -1] = -1
@@ -135,9 +122,8 @@ class LFSampler(Sampler):
                 lf_score = np.sum(uncertainty.reshape(-1, 1) * score, axis=0)  # LF utility score
                 lf_acc = np.sum(y_preds.reshape(-1, 1) == wl_mat, axis=0) / np.sum(wl_mat != -1, axis=0)
                 lf_mask = wl_mat != -1  # whether a user may design LF based on x
-                lf_probs = lf_mask * lf_acc
+                lf_probs = lf_mask * lf_acc + 1e-6
                 lf_probs = lf_probs / np.sum(lf_probs, axis=1, keepdims=True)
-                lf_probs = np.nan_to_num(lf_probs)
                 phi = np.sum(lf_score * lf_probs, axis=1)
                 idx = unlabeled_index[np.argmax(phi)]
         else:
@@ -171,11 +157,6 @@ class ActiveSampler(Sampler):
         if len(self.unlabeled_index.index) == 0:
             # no remaining data for selection
             return -1
-        elif len(self.unlabeled_index.index) > 300:
-            # subsample to speed up selection
-            sample_rate = 300 / len(self.unlabeled_index.index)
-        else:
-            sample_rate = 1.0
 
         if al_model is None or self.al_method == "passive":
             strategy = self.alibox.get_query_strategy(strategy_name='QueryInstanceRandom')
@@ -198,7 +179,7 @@ class ActiveSampler(Sampler):
         elif self.al_method == "EER":
             strategy = self.alibox.get_query_strategy(strategy_name='QueryExpectedErrorReduction')
             idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index.random_sampling(rate=sample_rate),
+                                  unlabel_index=self.unlabeled_index,
                                   model=al_model,
                                   batch_size=1)[0]
 
@@ -206,14 +187,14 @@ class ActiveSampler(Sampler):
             strategy = self.alibox.get_query_strategy(strategy_name='QueryInstanceQUIRE',
                                                       train_idx=self.train_index)
             idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index.random_sampling(rate=sample_rate),
+                                  unlabel_index=self.unlabeled_index,
                                   model=al_model,
                                   batch_size=1)[0]
         elif self.al_method == "density":
             strategy = self.alibox.get_query_strategy(strategy_name="QueryInstanceGraphDensity",
                                                       train_idx=self.train_index)
             idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index.random_sampling(rate=sample_rate),
+                                  unlabel_index=self.unlabeled_index,
                                   model=al_model,
                                   batch_size=1)[0]
         elif self.al_method == "LAL":
@@ -221,7 +202,7 @@ class ActiveSampler(Sampler):
             lal.download_data()
             lal.train_selector_from_file(reg_est=30, reg_depth=5)
             idx = lal.select(label_index=self.labeled_index,
-                             unlabel_index=self.unlabeled_index.random_sampling(rate=sample_rate),
+                             unlabel_index=self.unlabeled_index,
                              model=al_model,
                              batch_size=1)[0]
 
@@ -244,20 +225,6 @@ class HybridSampler(Sampler):
         self.al_sample_method = al_sample_method
         self.al_feature = al_feature
         self.rng = np.random.default_rng(seed)
-
-        # record the number of times each feature is observed by expert [for count]
-        self.feature_observed_count = np.zeros(self.dataset.feature_num)
-        self.feature_mat = self.dataset.xs.toarray()
-        self.feature_cov = np.mean(self.dataset.xs != 0, axis=0)
-        # create weak label matrix for all possible LFs
-        self.wl_mat = []
-
-        for i in range(self.dataset.n_class):
-            wl = - np.ones_like(self.dataset.xs)
-            wl[self.dataset.xs != 0] = i
-            self.wl_mat.append(wl)
-
-        self.wl_mat = np.hstack(self.wl_mat)
         # record data for active learning
         if self.al_feature == "tfidf":
             train_X = dataset.xs_feature
@@ -295,13 +262,6 @@ class HybridSampler(Sampler):
 
         if sample_method == "passive":
             idx = self.rng.choice(unlabeled_index)
-        elif sample_method == "count":
-            # explore based on observed count
-            feature_score = self.feature_cov / (self.feature_observed_count + 1)
-            xs_score = np.multiply(self.feature_mat, feature_score.reshape(1, -1))
-            xs_score = np.sum(xs_score, axis=1)[unlabeled_index]
-            idx = self.rng.choice(unlabeled_index, p=xs_score / np.sum(xs_score))
-            self.feature_observed_count += self.feature_mat[idx, :]
         elif sample_method == "SEU":
             # select by expected utility (Nemo)
             assert "y_probs" in kwargs
@@ -309,18 +269,25 @@ class HybridSampler(Sampler):
                 # fall back to passive sampling
                 idx = self.rng.choice(unlabeled_index)
             else:
-                uncertainty = entropy(kwargs["y_probs"], axis=1)
-                y_preds = np.argmax(kwargs["y_probs"], axis=1)
-                score = np.zeros_like(self.wl_mat)
-                score[self.wl_mat != -1] = -1
-                score[y_preds.reshape(-1, 1) == self.wl_mat] = 1
-                lf_score = np.sum(uncertainty.reshape(-1, 1) * score, axis=0)
-                lf_acc = np.sum(y_preds.reshape(-1, 1) == self.wl_mat, axis=0) / np.sum(self.wl_mat != -1, axis=0)
-                lf_mask = self.wl_mat != -1  # whether a user may design LF based on x
-                lf_probs = lf_mask * lf_acc
+                uncertainty = entropy(kwargs["y_probs"], axis=1)[unlabeled_index]
+                y_preds = np.argmax(kwargs["y_probs"], axis=1)[unlabeled_index]
+                feature_mat = self.dataset.xs[unlabeled_index, :].toarray()
+                wl_mat = []
+                for i in range(self.dataset.n_class):
+                    wl = - np.ones_like(feature_mat)
+                    wl[feature_mat != 0] = i
+                    wl_mat.append(wl)
+                wl_mat = np.hstack(wl_mat)
+
+                score = np.zeros_like(wl_mat)
+                score[wl_mat != -1] = -1
+                score[y_preds.reshape(-1, 1) == wl_mat] = 1  # record whether the weak labels are correct
+                lf_score = np.sum(uncertainty.reshape(-1, 1) * score, axis=0)  # LF utility score
+                lf_acc = np.sum(y_preds.reshape(-1, 1) == wl_mat, axis=0) / np.sum(wl_mat != -1, axis=0)
+                lf_mask = wl_mat != -1  # whether a user may design LF based on x
+                lf_probs = lf_mask * lf_acc + 1e-6
                 lf_probs = lf_probs / np.sum(lf_probs, axis=1, keepdims=True)
-                lf_probs = np.nan_to_num(lf_probs)
-                phi = np.sum(lf_score * lf_probs, axis=1)[unlabeled_index]
+                phi = np.sum(lf_score * lf_probs, axis=1)
                 idx = unlabeled_index[np.argmax(phi)]
         elif sample_method == "uncertain":
             strategy = self.alibox.get_query_strategy(strategy_name='QueryInstanceUncertainty')

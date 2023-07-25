@@ -89,11 +89,8 @@ if __name__ == "__main__":
 
         sampler = get_sampler(sampler_type=args.sampler,
                               dataset=train_dataset,
-                              seed=seed,
-                              explore_method=None,
-                              exploit_method=None,
-                              al_feature="tfidf",
-                              uncertain_type=args.uncertain_type)
+                              seed=seed)
+
         agent = SimulateAgent(train_dataset,
                               seed=seed,
                               label_error_rate=args.label_error_rate)
@@ -108,7 +105,10 @@ if __name__ == "__main__":
                 y_val = valid_dataset.ys
 
                 if args.end_model == "logistic":
-                    end_model = get_discriminator("logistic", prob_labels=False, seed=seed)
+                    end_model = get_discriminator("logistic",
+                                                  prob_labels=False,
+                                                  input_dim=train_dataset.xs_feature.shape[1],
+                                                  seed=seed)
                 else:
                     raise ValueError(f"End model {args.end_model} not supported yet.")
 

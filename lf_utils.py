@@ -120,7 +120,7 @@ def select_al_thresholds(al_probs, dp_preds, dp_indices, labels):
     al_conf = np.max(al_probs, axis=1)
     candidate_thres = np.unique(al_conf)
     step = len(candidate_thres) // 100
-    candidate_thres = candidate_thres[::step]
+    candidate_thres = np.append(candidate_thres[::step], 1.0)
     best_precision = 0.0
     best_theta = 0.0
     for theta in candidate_thres:

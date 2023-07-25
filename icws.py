@@ -28,6 +28,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset-sample-size', type=int, default=None)
     parser.add_argument('--test-ratio', type=float, default=0.1)
     parser.add_argument('--valid-ratio', type=float, default=0.1)
+    parser.add_argument('--valid-sample-size', type=int, default=None)
     parser.add_argument('--feature', type=str, default='tfidf')
     # dataset settings: for text dataset processing
     parser.add_argument("--stemmer", type=str, default="porter")
@@ -43,7 +44,7 @@ if __name__ == "__main__":
     # sampler settings
     parser.add_argument("--sampler", type=str, default="passive")
     parser.add_argument("--lf-sample-method", type=str, default="passive")
-    parser.add_argument("--al-sample-method", type=str, default="uncertain")
+    parser.add_argument("--al-sample-method", type=str, default="QBC")
     parser.add_argument("--uncertain-type", type=str, default="entropy")
     # agent settings
     parser.add_argument("--agent", type=str, default="simulate")
@@ -51,7 +52,7 @@ if __name__ == "__main__":
     parser.add_argument("--criterion", type=str, default="acc", choices=["acc", "lexicon"])
     parser.add_argument("--acc-threshold", type=float, default=0.6)
     parser.add_argument("--label-error-rate", type=float, default=0.0)
-    parser.add_argument("--feature-error-rate", type=float, default=0.0)
+    parser.add_argument("--lf-error-rate", type=float, default=0.0)
     parser.add_argument("--zero-feat", action="store_true")  # possible to return feature with 0 value
     # LF filter settings
     parser.add_argument("--filter-method", type=str, default=None)
@@ -82,7 +83,7 @@ if __name__ == "__main__":
     group_id = wandb.util.generate_id()
     config_dict = vars(args)
     config_dict["group_id"] = group_id
-    config_dict["method"] = "SIDP"
+    config_dict["method"] = "ActiveDP"
     # load dataset
     train_dataset, valid_dataset, test_dataset = load_data(data_root=data_dir,
                                                            dataset_name=args.dataset,
@@ -99,7 +100,7 @@ if __name__ == "__main__":
 
     for run in args.runs:
         wandb.init(
-            project="scalable-idp",
+            project="scalable-idp-baselines",
             config=config_dict
         )
         wandb.define_metric("test_acc", summary="mean")
@@ -128,7 +129,7 @@ if __name__ == "__main__":
                               seed=seed,
                               max_features=args.max_features,
                               label_error_rate=args.label_error_rate,
-                              feature_error_rate=args.feature_error_rate,
+                              lf_error_rate=args.lf_error_rate,
                               criterion=args.criterion,
                               acc_threshold=args.acc_threshold,
                               zero_feat=args.zero_feat,
@@ -318,7 +319,7 @@ if __name__ == "__main__":
             else:
                 y_probs = None
 
-            if args.sampler == "Hybrid":
+            if args.sampler == "hybrid":
                 al_sample_prob = al_coverage / (al_coverage + dp_coverage)
                 idx = sampler.sample(al_sample_prob=al_sample_prob, al_model=al_model, y_probs=y_probs)
             elif args.sampler == "SEU":
@@ -355,12 +356,14 @@ if __name__ == "__main__":
                 al_model = LogisticRegression(random_state=seed)
             elif args.al_model == "decision-tree":
                 al_model = DecisionTreeClassifier(random_state=seed)
+            elif args.al_model is None:
+                al_model = None
             else:
                 raise ValueError(f"AL model {args.al_model} not supported.")
 
             if t < 10 or len(np.unique(sampler.sampled_labels)) < train_dataset.n_class:
                 al_model = None
-            else:
+            elif al_model is not None:
                 labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
                 if args.al_feature == "tfidf":
                     al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
