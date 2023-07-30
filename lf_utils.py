@@ -42,12 +42,12 @@ def check_filter(sampler, label_model_type, filtered_feature_indices, train_data
                  seed, device):
     """
     Check whether to use LF filtering or not
-    :param sampler:
-    :param label_model:
-    :param filtered_feature_indices:
-    :param valid_data:
-    :param use_valid_labels:
-    :return:
+    :param sampler: active sampler
+    :param label_model_type: label model in DP
+    :param filtered_feature_indices: the features used to generate LFs after filtering
+    :param valid_data: validation dataset
+    :param use_valid_labels: whether use validation labels or not
+    :return: label_model, label_functions
     """
     # calculate label precision with no LF filtering
     lfs = sampler.create_label_functions()
@@ -71,6 +71,7 @@ def check_filter(sampler, label_model_type, filtered_feature_indices, train_data
         val_pred = lm.predict(L_val_active)
         val_precision = accuracy_score(y_val_active, val_pred)
     else:
+        # use the labeled subset in training set to estimate validation precision
         val_pred = lm.predict(L_train[sampler.sampled_idxs, :])
         val_labels = sampler.sampled_labels
         val_precision = accuracy_score(val_labels, val_pred)
@@ -119,7 +120,7 @@ def select_al_thresholds(al_probs, dp_preds, dp_indices, labels):
     al_preds = np.argmax(al_probs, axis=1)
     al_conf = np.max(al_probs, axis=1)
     candidate_thres = np.unique(al_conf)
-    step = len(candidate_thres) // 100
+    step = np.ceil(len(candidate_thres) / 100).astype(int)
     candidate_thres = np.append(candidate_thres[::step], 1.0)
     best_precision = 0.0
     best_theta = 0.0

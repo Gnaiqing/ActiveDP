@@ -13,6 +13,7 @@ from snorkel.labeling.model import LabelModel, MajorityLabelVoter
 from discriminator import get_discriminator
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
 from lf_utils import get_lf_stats, select_al_thresholds, merge_filtered_probs, check_filter, check_all_class
 
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset-sample-size', type=int, default=None)
     parser.add_argument('--test-ratio', type=float, default=0.1)
     parser.add_argument('--valid-ratio', type=float, default=0.1)
-    parser.add_argument('--valid-sample-size', type=int, default=None)
+    parser.add_argument('--valid-sample-frac', type=float, default=None)
     parser.add_argument('--feature', type=str, default='tfidf')
     # dataset settings: for text dataset processing
     parser.add_argument("--stemmer", type=str, default="porter")
@@ -43,8 +44,8 @@ if __name__ == "__main__":
     parser.add_argument('--warmup-size', type=int, default=100)  # only used when use-valid-label set to false
     # sampler settings
     parser.add_argument("--sampler", type=str, default="passive")
-    parser.add_argument("--lf-sample-method", type=str, default="passive")
-    parser.add_argument("--al-sample-method", type=str, default="QBC")
+    parser.add_argument("--lf-sample-method", type=str, default="passive")  # only used when sampler==hybrid
+    parser.add_argument("--al-sample-method", type=str, default="QBC")  # only used when sampler==hybrid
     parser.add_argument("--uncertain-type", type=str, default="entropy")
     # agent settings
     parser.add_argument("--agent", type=str, default="simulate")
@@ -93,7 +94,8 @@ if __name__ == "__main__":
                                                            stemmer=args.stemmer,
                                                            max_ngram=args.max_ngram,
                                                            min_df=args.min_df,
-                                                           max_df=args.max_df
+                                                           max_df=args.max_df,
+                                                           valid_sample_frac=args.valid_sample_frac,
                                                            )
 
     train_dataset.display(split="train")
@@ -242,7 +244,20 @@ if __name__ == "__main__":
                             theta = select_al_thresholds(al_val_probs, dp_val_preds, val_filtered_indices, val_labels)
                         else:
                             # split the labeled subset for training and validation purpose
-                            raise NotImplementedError
+                            L_labeled = labeled_dataset.generate_label_matrix(lfs=lfs)
+                            x_train, x_sp, y_train, y_sp, wl_train, wl_sp = train_test_split(
+                                labeled_dataset.xs, labeled_dataset.ys, L_labeled, test_size=0.5)
+
+                            if args.al_model == "logistic":
+                                al_model_sp = LogisticRegression(random_state=seed)
+                            elif args.al_model == "decision-tree":
+                                al_model_sp = DecisionTreeClassifier(random_state=seed)
+
+                            al_model_sp.fit(x_train, y_train)
+                            al_sp_probs = al_model_sp.predict_proba(x_sp)
+                            dp_sp_probs = label_model.predict(wl_sp)
+                            dp_indices = np.arange(len(wl_sp))
+                            theta = select_al_thresholds(al_sp_probs, dp_sp_probs, dp_indices, y_sp)
 
                         # track the respective coverage of DP and AL
                         al_tr_probs = al_model.predict_proba(tr_features)
@@ -344,11 +359,14 @@ if __name__ == "__main__":
                 L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
                 L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
 
-                if args.label_model == "mv" or len(lfs) < 3:
+                if args.label_model == "mv" or len(lfs) < 3 or np.min(y_val_filtered) == np.max(y_val_filtered):
                     label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
                 elif args.label_model == "snorkel":
                     label_model = LabelModel(cardinality=train_dataset.n_class, device=device)
-                    label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
+                    try:
+                        label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
+                    except RuntimeError:
+                        label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
                 else:
                     raise ValueError(f"Label model {args.label_model} not supported yet.")
 

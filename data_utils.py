@@ -356,7 +356,8 @@ def tr_val_te_split(xs, ys, test_ratio, valid_ratio, rand_state):
 
 
 def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_size=None,
-              stemmer="porter", feature="tfidf", max_ngram=1, max_df=1.0, min_df=1, max_features=None):
+              stemmer="porter", feature="tfidf", max_ngram=1, max_df=1.0, min_df=1,
+              max_features=None, valid_sample_frac=None):
     """
     Load dataset and split it
     :param data_root: dataset directory path
@@ -522,11 +523,21 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
         trainset = TextDataset(train_xs_text, train_ys, dataset_name, feature=feature, max_ngram=max_ngram,
                                stemmer=stemmer,max_df=max_df,
                                min_df=min_df, max_features=max_features, label_names=label_names)
-        validset = TextDataset(valid_xs_text, valid_ys, dataset_name, feature=feature, max_ngram=max_ngram,
-                               stemmer=stemmer, max_df=max_df,
-                               min_df=min_df, max_features=max_features,
-                               count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
-                               label_names=label_names)
+        if valid_sample_frac is None:
+            validset = TextDataset(valid_xs_text, valid_ys, dataset_name, feature=feature, max_ngram=max_ngram,
+                                   stemmer=stemmer, max_df=max_df,
+                                   min_df=min_df, max_features=max_features,
+                                   count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
+                                   label_names=label_names)
+        else:
+            valid_sample_size = int(valid_sample_frac * len(valid_xs_text))
+            selected_valid_indices = rand_state.choice(len(valid_xs_text), size=valid_sample_size, replace=False)
+            validset = TextDataset(valid_xs_text[selected_valid_indices], valid_ys[selected_valid_indices],
+                                   dataset_name, feature=feature, max_ngram=max_ngram,
+                                   stemmer=stemmer, max_df=max_df,
+                                   min_df=min_df, max_features=max_features,
+                                   count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
+                                   label_names=label_names)
         testset = TextDataset(test_xs_text, test_ys, dataset_name, feature=feature, max_ngram=max_ngram,
                               stemmer=stemmer, max_df=max_df,
                               min_df=min_df, max_features=max_features,
