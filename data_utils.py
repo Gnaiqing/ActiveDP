@@ -51,7 +51,7 @@ class AbstractDataset(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def create_subset(self, indices, features, labels=None):
+    def create_subset(self, indices):
         """
         Create a sub with subset of instance and features
         :param indices: subset indices
@@ -180,20 +180,13 @@ porterstemmer = PorterStemmer()
 # Define a custom tokenizer function that applies stemming
 def tokenize(text):
     tokens = text.split()
-    # for token in tokens:
-        # stemmed_token = porterstemmer.stem(token)
-        # if not stemmed_token.isalpha():
-        #     print("Stemmed token:")
-        #     print(repr(stemmed_token))
-        # else:
-        #     stemmed_tokens.append(stemmed_token)
     stemmed_tokens = [porterstemmer.stem(token) for token in tokens]
     return stemmed_tokens
 
 
 class TextDataset(AbstractDataset):
-    def __init__(self, xs_text, ys, dataset_name, label_names=None, feature="tfidf", max_ngram=1, max_df=1.0, min_df=1,
-                 max_features=None, stemmer="porter", count_vectorizer=None, pipeline=None):
+    def __init__(self, xs_text, ys, dataset_name, label_names=None, feature="tfidf", max_ngram=1, max_df=0.9, min_df=1,
+                 max_features=None, stemmer=None, count_vectorizer=None, pipeline=None):
         """
         Intialize text dataset
         :param xs_text: list of input texts or input feature array
@@ -241,17 +234,9 @@ class TextDataset(AbstractDataset):
                 self.xs_feature = vectorizer.fit_transform(xs_text).toarray()
                 self.xs_feature = scalar.fit_transform(self.xs_feature)
                 self.pipeline = (vectorizer, scalar)
-                # self.pipeline = Pipeline([
-                #     ('tfidf',
-                #      TfidfVectorizer(strip_accents='ascii', stop_words='english', max_df=0.9, max_features=1000)),
-                #     ('scaler', StandardScaler(with_mean=False))
-                # ])
-                # self.xs_feature = self.pipeline.fit_transform(xs_text)
             else:
                 raise ValueError('Feature representation not supported.')
         else:
-            # self.pipeline = pipeline
-            # self.xs_feature = self.pipeline.transform(xs_text)
             (vectorizer, scalar) = pipeline
             self.xs_feature = vectorizer.transform(xs_text).toarray()
             self.xs_feature = scalar.transform(self.xs_feature)
@@ -262,39 +247,20 @@ class TextDataset(AbstractDataset):
         else:
             return -1
 
-    def create_subset(self, indices, features, labels=None, drop_const_columns=True):
+    def create_subset(self, indices):
         """
-        Create a sub with subset of instance and features
+        Create a sub with subset of instance
         :param indices: subset indices
-        :param features: subset features
-        :param labels: subset labels. If set, the original ys will be replaced
         :return:
         """
         sub_xs_text = self.xs_text[indices]
-        if labels is None:
-            sub_ys = self.ys[indices]
-        else:
-            sub_ys = labels
+        sub_ys = self.ys[indices]
         subset = TextDataset(sub_xs_text, sub_ys, self.dataset_name, label_names=self.label_names,
                              count_vectorizer=self.count_vectorizer, pipeline=self.pipeline)
 
         sub_xs = self.xs[indices, :].toarray()
-        if drop_const_columns:
-            filtered_features = []
-            for j in features:
-                if np.min(sub_xs[:, j]) != np.max(sub_xs[:, j]):
-                    filtered_features.append(j)
-
-            features = np.array(filtered_features)
-
-        sub_xs = sub_xs[:, features]
         subset.xs = sparse.csr_matrix(sub_xs)
-        if self.feature_names is not None:
-            feature_names = self.feature_names[features]
-        else:
-            feature_names = None
-        subset.feature_names = feature_names
-
+        subset.feature_names = self.feature_names
         return subset
 
     def to_dataframe(self):
@@ -356,8 +322,8 @@ def tr_val_te_split(xs, ys, test_ratio, valid_ratio, rand_state):
 
 
 def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_size=None,
-              stemmer="porter", feature="tfidf", max_ngram=1, max_df=1.0, min_df=1,
-              max_features=None, valid_sample_frac=None):
+              stemmer=None, feature="tfidf", max_ngram=1, max_df=0.9, min_df=1,
+              max_features=1000, valid_sample_frac=None):
     """
     Load dataset and split it
     :param data_root: dataset directory path
@@ -368,14 +334,6 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
     :param params: parameters for processing text data
     :return:
     """
-    if dataset_name in ["Youtube", "IMDB", "Yelp", "Amazon", "Amazon-short", "Agnews", "BiasBios-professor-teacher",
-                        "BiasBios-professor-physician", "BiasBios-journalist-photographer", "BiasBios-painter-architect"]:
-        dataset_type = "text"
-    elif dataset_name in []:
-        dataset_type = "discrete"
-    else:
-        raise ValueError(f"Dataset {dataset_name} not supported.")
-
     if dataset_name == "Youtube":
         data_dir = os.path.join(data_root, "spam/data")
         files = ['Youtube01-Psy.csv', 'Youtube02-KatyPerry.csv', 'Youtube03-LMFAO.csv',
@@ -442,18 +400,6 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
         labels = df[:, 0].astype(int) - 1
         label_names = ["negative", "positive"]
 
-    elif dataset_name == "Amazon-short":
-        # short version of amazon review that only use title
-        train_path = os.path.join(data_root, "amazon_review_polarity_csv/train.csv")
-        test_path = os.path.join(data_root, "amazon_review_polarity_csv/test.csv")
-        df_train = pd.read_csv(train_path, sep=',', header=None, encoding='utf-8-sig')
-        df_test = pd.read_csv(test_path, sep=',', header=None, encoding='utf-8-sig')
-        df_all = pd.concat([df_train, df_test])
-        df = df_all.to_numpy()
-        raw_texts = df[:, 1]
-        labels = df[:, 0].astype(int) - 1
-        label_names = ["negative", "positive"]
-
     elif dataset_name == "Agnews":
         train_path = os.path.join(data_root, "ag_news_csv/train.csv")
         test_path = os.path.join(data_root, "ag_news_csv/test.csv")
@@ -501,57 +447,38 @@ def load_data(data_root, dataset_name, valid_ratio, test_ratio, seed=0, sample_s
         labels[labels == -1] = 0
         label_names = ["painter", "architect"]
 
-    else:
-        # TODO: support discrete datasets
-        xs = None
-        feature_names = None
-        label_names = None
-
     rand_state = np.random.default_rng(seed)
     if sample_size is not None and len(labels) > sample_size:
         # sample the dataset
         selected_indices = rand_state.choice(len(labels), size=sample_size, replace=False)
         labels = labels[selected_indices]
-        if dataset_type == "text":
-            raw_texts = raw_texts[selected_indices]
-        else:
-            xs = xs[selected_indices, :]
+        raw_texts = raw_texts[selected_indices]
 
-    if dataset_type == "text":
-        train_xs_text, train_ys, valid_xs_text, valid_ys, test_xs_text, test_ys, train_idxs, valid_idxs, test_idxs = \
-            tr_val_te_split(raw_texts, labels, test_ratio, valid_ratio, rand_state)
-        trainset = TextDataset(train_xs_text, train_ys, dataset_name, feature=feature, max_ngram=max_ngram,
-                               stemmer=stemmer,max_df=max_df,
-                               min_df=min_df, max_features=max_features, label_names=label_names)
-        if valid_sample_frac is None:
-            validset = TextDataset(valid_xs_text, valid_ys, dataset_name, feature=feature, max_ngram=max_ngram,
-                                   stemmer=stemmer, max_df=max_df,
-                                   min_df=min_df, max_features=max_features,
-                                   count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
-                                   label_names=label_names)
-        else:
-            valid_sample_size = int(valid_sample_frac * len(valid_xs_text))
-            selected_valid_indices = rand_state.choice(len(valid_xs_text), size=valid_sample_size, replace=False)
-            validset = TextDataset(valid_xs_text[selected_valid_indices], valid_ys[selected_valid_indices],
-                                   dataset_name, feature=feature, max_ngram=max_ngram,
-                                   stemmer=stemmer, max_df=max_df,
-                                   min_df=min_df, max_features=max_features,
-                                   count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
-                                   label_names=label_names)
-        testset = TextDataset(test_xs_text, test_ys, dataset_name, feature=feature, max_ngram=max_ngram,
-                              stemmer=stemmer, max_df=max_df,
-                              min_df=min_df, max_features=max_features,
-                              count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
-                              label_names=label_names)
-
-    elif dataset_type == "discrete":
-        train_xs, train_ys, valid_xs, valid_ys, test_xs, test_ys = \
-            tr_val_te_split(xs, labels, test_ratio, valid_ratio, rand_state)
-        trainset = DiscreteDataset(train_xs, train_ys, dataset_name, feature_names=feature_names,
-                                   label_names=label_names)
-        validset = DiscreteDataset(valid_xs, valid_ys, dataset_name, feature_names=feature_names,
-                                   label_names=label_names)
-        testset = DiscreteDataset(test_xs, test_ys, dataset_name, feature_names=feature_names, label_names=label_names)
+    train_xs_text, train_ys, valid_xs_text, valid_ys, test_xs_text, test_ys, train_idxs, valid_idxs, test_idxs = \
+        tr_val_te_split(raw_texts, labels, test_ratio, valid_ratio, rand_state)
+    trainset = TextDataset(train_xs_text, train_ys, dataset_name, feature=feature, max_ngram=max_ngram,
+                           stemmer=stemmer,max_df=max_df,
+                           min_df=min_df, max_features=max_features, label_names=label_names)
+    if valid_sample_frac is None:
+        validset = TextDataset(valid_xs_text, valid_ys, dataset_name, feature=feature, max_ngram=max_ngram,
+                               stemmer=stemmer, max_df=max_df,
+                               min_df=min_df, max_features=max_features,
+                               count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
+                               label_names=label_names)
+    else:
+        valid_sample_size = int(valid_sample_frac * len(valid_xs_text))
+        selected_valid_indices = rand_state.choice(len(valid_xs_text), size=valid_sample_size, replace=False)
+        validset = TextDataset(valid_xs_text[selected_valid_indices], valid_ys[selected_valid_indices],
+                               dataset_name, feature=feature, max_ngram=max_ngram,
+                               stemmer=stemmer, max_df=max_df,
+                               min_df=min_df, max_features=max_features,
+                               count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
+                               label_names=label_names)
+    testset = TextDataset(test_xs_text, test_ys, dataset_name, feature=feature, max_ngram=max_ngram,
+                          stemmer=stemmer, max_df=max_df,
+                          min_df=min_df, max_features=max_features,
+                          count_vectorizer=trainset.count_vectorizer, pipeline=trainset.pipeline,
+                          label_names=label_names)
 
     return trainset, validset, testset
 
@@ -572,14 +499,14 @@ def filter_abstain(L, ys):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_root", type=str, default="../ws_data/")
-    parser.add_argument("--dataset_name", type=str, default="youtube")
+    parser.add_argument("--dataset_name", type=str, default="Youtube")
     parser.add_argument("--valid_ratio", type=float, default=0.1)
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
     # for text dataset processing
-    parser.add_argument("--stemmer", type=str, default="porter")
+    parser.add_argument("--stemmer", type=str, default=None)
     parser.add_argument("--min_df", type=int, default=1)
-    parser.add_argument("--max_df", type=float, default=0.7)
+    parser.add_argument("--max_df", type=float, default=0.9)
     parser.add_argument("--max_ngram", type=int, default=1)
 
     args = parser.parse_args()

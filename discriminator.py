@@ -62,9 +62,10 @@ class LogReg(Classifier):
         search_space = self.params
 
         if self.prob_labels:
+            y_train = y_train[:, 1].flatten()  # get probability of class 1
             x_train = np.vstack((x_train, x_train))
             weights = np.hstack((1.-y_train, y_train))
-            y_train = np.hstack([-np.ones(len(y_train)), np.ones(len(y_train))])
+            y_train = np.hstack([np.zeros(len(y_train)), np.ones(len(y_train))])
             if sample_weights is not None:
                 sample_weights = np.hstack((sample_weights, sample_weights)) * weights
             else:
@@ -93,9 +94,10 @@ class LogReg(Classifier):
 
     def fit(self, xs, ys, sample_weights=None, device=None):
         if self.prob_labels:
+            ys = ys[:, 1]  # get probablity for class 1
             xs = np.vstack((xs, xs))
             weights = np.hstack((1.-ys, ys))
-            ys = np.hstack([-np.ones(len(ys)), np.ones(len(ys))])
+            ys = np.hstack([np.zeros(len(ys)), np.ones(len(ys))])
             if sample_weights is not None:
                 sample_weights = np.hstack((sample_weights, sample_weights)) * weights
             else:

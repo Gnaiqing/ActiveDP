@@ -72,14 +72,13 @@ class AbstractAgent(abc.ABC):
 
 class SimulateAgent(AbstractAgent):
     def __init__(self, dataset, seed, max_features=None, label_error_rate=0.0, lf_error_rate=0.0,
-                 criterion="acc", acc_threshold=0.6, zero_feat=False, lexicon=None):
+                 criterion="acc", acc_threshold=0.6, lexicon=None):
         super(SimulateAgent, self).__init__(dataset, seed)
         self.label_error_rate = label_error_rate  # error rate for providing a wrong label
         self.lf_error_rate = lf_error_rate  # error rate for providing a LF with accuracy below threshold
         self.criterion = criterion  # criterion for returning features
         self.acc_threshold = acc_threshold  # accuracy threshold for returning features
         self.max_features = max_features  # maximum number of features returned per instance
-        self.zero_feat = zero_feat  # if set to true, can return feature with 0 value on selected instance
         self.selected_features = np.repeat(False, self.dataset.n_features())
         self.lexicon = lexicon
 
@@ -111,7 +110,7 @@ class SimulateAgent(AbstractAgent):
             candidate_accs = []
             candidate_covs = []
             for j in range(self.dataset.n_features()):
-                if (not self.zero_feat) and (xi[j] == 0):
+                if xi[j] == 0:
                     continue
 
                 selected = self.dataset.xs[:,j] == xi[j]

@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import wandb
-from data_utils import load_data, filter_abstain
+from data_utils import load_data
 from sampler import get_sampler
 from agent import SimulateAgent
 from csd import StructureDiscovery
@@ -13,7 +13,6 @@ from discriminator import get_discriminator
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
-from lf_utils import get_lf_stats, select_al_thresholds, merge_filtered_probs, check_filter, check_all_class
 import matplotlib.pyplot as plt
 
 
@@ -30,9 +29,9 @@ if __name__ == "__main__":
     parser.add_argument('--valid-ratio', type=float, default=0.1)
     parser.add_argument('--feature', type=str, default='tfidf')
     # dataset settings: for text dataset processing
-    parser.add_argument("--stemmer", type=str, default="porter")
+    parser.add_argument("--stemmer", type=str, default=None)
     parser.add_argument("--min_df", type=int, default=1)
-    parser.add_argument("--max_df", type=float, default=0.7)
+    parser.add_argument("--max_df", type=float, default=0.9)
     parser.add_argument("--max_ngram", type=int, default=1)
     # framework settings
     parser.add_argument('--num-query', type=int, default=300)
@@ -98,7 +97,7 @@ if __name__ == "__main__":
         for t in range(args.num_query + 1):
             if t % args.train_iter == 0 and t > 0:
                 print("Evaluating after {} iterations".format(t))
-                labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
+                labeled_dataset = sampler.create_labeled_dataset()
                 tr_features = labeled_dataset.xs_feature
                 y_tr = labeled_dataset.ys
                 val_features = valid_dataset.xs_feature

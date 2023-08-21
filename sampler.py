@@ -55,22 +55,18 @@ class Sampler(abc.ABC):
 
         return lfs
 
-    def create_labeled_dataset(self, features="all", drop_const_columns=False):
+    def create_labeled_dataset(self):
         """
         Create labeled dataset using expert annotation
         :param features: "selected" or "all"
         :param drop_const_columns: whether remove columns with constant values
         :return: labeled dataset
         """
-        if features == "selected":
-            features = np.arange(self.dataset.n_features())[self.feature_mask]
-        elif features == "all":
-            features = np.arange(self.dataset.n_features())
 
         subset_idxs = np.array(self.sampled_idxs)
         subset_labels = np.array(self.sampled_labels)
-        labeled_dataset = self.dataset.create_subset(subset_idxs, features, labels=subset_labels,
-                                                     drop_const_columns=drop_const_columns)
+        labeled_dataset = self.dataset.create_subset(subset_idxs)
+        labeled_dataset.ys = subset_labels
         return labeled_dataset
 
 

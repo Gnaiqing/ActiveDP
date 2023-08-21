@@ -10,11 +10,7 @@ import matplotlib.pyplot as plt
 
 class StructureDiscovery:
     def __init__(self, dataset):
-        if isinstance(dataset, AbstractDataset):
-            self.dataset = dataset.to_dataframe()
-        else:
-            raise ValueError("Dataset type not supported.")
-
+        self.dataset = dataset.to_dataframe()
         self.output_graph = None  # learned dependence graph
 
     def get_neighbor_nodes(self, method, alpha=0.05, display=True):
