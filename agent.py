@@ -176,6 +176,7 @@ class SimulateAgent(AbstractAgent):
         else:
             raise ValueError(f"Agent selection criterion {self.criterion} not supported.")
 
+
         return label, selected_features
 
 

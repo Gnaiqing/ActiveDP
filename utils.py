@@ -69,13 +69,12 @@ def check_filter(sampler, label_model_type, filtered_feature_indices, train_data
     L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
     L_tr_active, y_tr_active, tr_indices = filter_abstain(L_train, train_dataset.ys)
     L_val_active, y_val_active, val_indices = filter_abstain(L_valid, valid_dataset.ys)
-    if len(lfs) < 3:
+    if len(lfs) < 3 or label_model_type == "mv":
         lm = get_label_model("mv", cardinality=train_dataset.n_class)
     else:
         lm = get_label_model(label_model_type, cardinality=train_dataset.n_class)
-
-    if label_model_type == "snorkel":
-        lm.fit(L_tr_active, L_val_active, y_val_active, tune_params=tune_params)
+        # lm.fit(L_tr_active, L_val_active, y_val_active, tune_params=tune_params)
+        lm.fit(L_tr_active, L_valid, valid_dataset.ys, tune_params=tune_params)
 
     if use_valid_labels:
         val_pred = lm.predict(L_val_active)
@@ -95,12 +94,12 @@ def check_filter(sampler, label_model_type, filtered_feature_indices, train_data
     L_valid = valid_dataset.generate_label_matrix(lfs=filtered_lfs)
     L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
     L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
-    if len(filtered_lfs) < 3:
+    if len(filtered_lfs) < 3 or label_model_type == "mv":
         filtered_lm = get_label_model("mv", cardinality=train_dataset.n_class)
     else:
         filtered_lm = get_label_model(label_model_type, cardinality=train_dataset.n_class)
-    if label_model_type == "snorkel":
-        filtered_lm.fit(L_tr_filtered, L_val_filtered, y_val_filtered, tune_params=tune_params)
+        # filtered_lm.fit(L_tr_filtered, L_val_filtered, y_val_filtered, tune_params=tune_params)
+        filtered_lm.fit(L_tr_filtered, L_valid, valid_dataset.ys, tune_params=tune_params)
 
     if use_valid_labels:
         val_pred = filtered_lm.predict(L_val_filtered)

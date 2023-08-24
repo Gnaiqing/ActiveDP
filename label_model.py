@@ -27,6 +27,11 @@ class Snorkel:
         self.search_space = kwargs['search_space']
         self.n_trials = kwargs.get('n_trials', 100)
         self.cardinality = kwargs['cardinality']
+        # if "class_balance" in kwargs:
+        #     self.class_balance = kwargs["class_balance"]
+        # else:
+        #     self.class_balance = [1/self.cardinality] * self.cardinality
+
         self.best_params = None
         self.model = None
         self.kwargs = kwargs
@@ -50,8 +55,9 @@ class Snorkel:
             suggestions = {key: trial.suggest_categorical(key, search_space[key]) for key in search_space}
             nonlocal L_tr, L_val, ys_val
             model = LabelModel(cardinality=2, verbose=False)
-            model.fit(L_train=L_tr, Y_dev=ys_val, **suggestions, seed=self.seed, progress_bar=False)
 
+            model.fit(L_train=L_tr, Y_dev=ys_val, **suggestions, seed=self.seed, progress_bar=False)
+            # model.fit(L_train=L_tr, class_balance=self.class_balance, **suggestions, seed=self.seed, progress_bar=False)
             # logloss as validation loss
             if scoring == 'logloss':
                 ys_pred_val = model.predict_proba(L_val)
@@ -61,7 +67,7 @@ class Snorkel:
                 ys_pred = model.predict(L_val)
                 val_loss = -f1_score(ys_val, ys_pred)
             else:
-                raise ValueError ("Scoring metric not supported.")
+                raise ValueError("Scoring metric not supported.")
 
             return val_loss
 
@@ -75,6 +81,7 @@ class Snorkel:
 
         self.model = LabelModel(cardinality=self.cardinality,verbose=False)
         self.model.fit(L_train=L_tr, Y_dev=ys_val, **self.best_params, seed=self.seed, progress_bar=False)
+        # self.model.fit(L_train=L_tr, class_balance=self.class_balance, **self.best_params, seed=self.seed, progress_bar=False)
 
     def predict_proba(self, L):
         return self.model.predict_proba(L)

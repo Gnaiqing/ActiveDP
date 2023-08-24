@@ -147,9 +147,16 @@ if __name__ == "__main__":
                 if len(np.unique(sampler.sampled_labels)) != train_dataset.n_class:
                     # some class have not been sampled
                     label_model = None
+                    lfs = sampler.create_label_functions()
+                    L_train = train_dataset.generate_label_matrix(lfs=lfs)
+                    lf_stats = get_lf_stats(L_train, train_dataset.ys)
+
                 elif args.filter_method is not None and (args.use_valid_labels or t > warmup_size):
                     # apply LF filtering
-                    filtered_feature_indices = get_filtered_indices(sampler, args.filter_method, args.ci_alpha)
+                    try:
+                        filtered_feature_indices = get_filtered_indices(sampler, args.filter_method, args.ci_alpha)
+                    except FloatingPointError:
+                        filtered_feature_indices = np.nonzero(sampler.feature_mask)[0]
                     # check whether filtering improves label quality
                     label_model, lfs = check_filter(
                         sampler=sampler,
@@ -162,6 +169,7 @@ if __name__ == "__main__":
                         device=device,
                         tune_params=not args.ablate_lm_tuning,
                     )
+
                     L_train = train_dataset.generate_label_matrix(lfs=lfs)
                     L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
                     lf_stats = get_lf_stats(L_train, train_dataset.ys)
@@ -181,7 +189,9 @@ if __name__ == "__main__":
                     else:
                         label_model = get_label_model(args.label_model, cardinality=train_dataset.n_class)
                         if args.label_model == "snorkel":
-                            label_model.fit(L_tr=L_tr_filtered, L_val=L_val_filtered, ys_val=y_val_filtered,
+                            # label_model.fit(L_tr=L_tr_filtered, L_val=L_val_filtered, ys_val=y_val_filtered,
+                            #                 tune_params=not args.ablate_lm_tuning)
+                            label_model.fit(L_tr=L_tr_filtered, L_val=L_valid, ys_val=valid_dataset.ys,
                                             tune_params=not args.ablate_lm_tuning)
 
                 if label_model is None:
