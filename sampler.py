@@ -2,6 +2,7 @@ import numpy as np
 from scipy.stats import entropy
 from alipy import ToolBox
 import abc
+import copy
 
 
 def get_sampler(sampler_type, dataset, seed, lf_sample_method=None, al_sample_method=None, al_feature="tfidf"):
@@ -79,6 +80,17 @@ class LFSampler(Sampler):
         self.sample_method = sample_method
         self.unlabeled_index = np.arange(len(self.dataset))
         self.rng = np.random.default_rng(seed)
+        self.xs = self.dataset.xs.tolil()
+
+    def update_feedback(self, idx, label, features=None):
+        super(LFSampler, self).update_feedback(idx, label, features)
+        if len(features) > 0:
+            for j in features:
+                self.xs[:,j] = 0  # discard features already used for creating LFs
+        else:
+            features = np.nonzero(self.xs[idx,:].toarray().flatten())[0]
+            for j in features:
+                self.xs[:,j] = 0
 
     def sample(self, **kwargs):
         is_candidate = np.repeat(True, len(self.dataset))
@@ -88,10 +100,10 @@ class LFSampler(Sampler):
         unlabeled_index = np.arange(len(self.dataset))[is_candidate]
         if len(unlabeled_index) == 0:
             return -1
-        if len(unlabeled_index) > 1000:
-            # subsample to reduce runtime
-            unlabeled_index = self.rng.choice(unlabeled_index, size=1000, replace=False)
-            unlabeled_index = np.sort(unlabeled_index)
+        # if len(unlabeled_index) > 1000:
+        #     # subsample to reduce runtime
+        #     unlabeled_index = self.rng.choice(unlabeled_index, size=1000, replace=False)
+        #     unlabeled_index = np.sort(unlabeled_index)
 
         if self.sample_method == "passive":
             idx = self.rng.choice(unlabeled_index)
@@ -102,9 +114,10 @@ class LFSampler(Sampler):
                 # fall back to passive sampling
                 idx = self.rng.choice(unlabeled_index)
             else:
-                uncertainty = entropy(kwargs["y_probs"], axis=1)[unlabeled_index]
+                uncertainty = -(kwargs["y_probs"] * np.log(np.clip(kwargs["y_probs"], 1e-8, 1 - 1e-8))).sum(axis=1)[unlabeled_index]
+                # uncertainty = entropy(kwargs["y_probs"], axis=1)[unlabeled_index]
                 y_preds = np.argmax(kwargs["y_probs"], axis=1)[unlabeled_index]
-                feature_mat = self.dataset.xs[unlabeled_index,:].toarray()
+                feature_mat = self.xs[unlabeled_index,:].toarray()
                 wl_mat = []
                 for i in range(self.dataset.n_class):
                     wl = - np.ones_like(feature_mat)
@@ -116,12 +129,34 @@ class LFSampler(Sampler):
                 score[wl_mat != -1] = -1
                 score[y_preds.reshape(-1, 1) == wl_mat] = 1  # record whether the weak labels are correct
                 lf_score = np.sum(uncertainty.reshape(-1, 1) * score, axis=0)  # LF utility score
-                lf_acc = np.sum(y_preds.reshape(-1, 1) == wl_mat, axis=0) / np.sum(wl_mat != -1, axis=0)
+                n_correct = np.sum(y_preds.reshape(-1, 1) == wl_mat, axis=0).astype(float)
+                n_total = np.sum(wl_mat != -1, axis=0).astype(float)
+                lf_acc = np.divide(n_correct, n_total, out=np.zeros_like(n_correct), where=n_total!=0)
+                # lf_acc2 = np.sum(y_preds.reshape(-1, 1) == wl_mat, axis=0) / np.sum(wl_mat != -1, axis=0)
+                # lf_acc2 = np.nan_to_num(lf_acc)
                 lf_mask = wl_mat != -1  # whether a user may design LF based on x
-                lf_probs = lf_mask * lf_acc + 1e-6
-                lf_probs = lf_probs / np.sum(lf_probs, axis=1, keepdims=True)
+                # lf_probs = lf_mask * lf_acc + 1e-6
+                # lf_probs = lf_probs / np.sum(lf_probs, axis=1, keepdims=True)
+                lf_probs = lf_mask * np.exp(lf_acc)
+                norm = np.sum(lf_probs, axis=1, keepdims=True)
+                norm[norm != 0] = 1 / norm[norm != 0]
+                lf_probs = lf_probs * norm
+                # lf_probs = lf_probs / np.sum(lf_probs, axis=1, keepdims=True)
+                # lf_probs = np.nan_to_num(lf_probs)
                 phi = np.sum(lf_score * lf_probs, axis=1)
                 idx = unlabeled_index[np.argmax(phi)]
+                # debug purpose
+                # xs = self.xs[idx,:].toarray().flatten()
+                # xs_origin = self.dataset.xs[idx,:].toarray().flatten()
+                # active_features = np.nonzero(xs)[0]
+                # original_features = np.nonzero(xs_origin)[0]
+                # original_feature_names = [self.dataset.feature_names[j] for j in original_features]
+                # active_feature_names = [self.dataset.feature_names[j] for j in active_features]
+                # print("Example: ", self.dataset.xs_text[idx], self.dataset.ys[idx])
+                # print("Score: ", np.max(phi))
+                # print("Active Features: ", active_feature_names)
+                # print("Original Features: ", original_feature_names)
+
         else:
             raise ValueError(f"Sample method {self.sample_method} not supported.")
 

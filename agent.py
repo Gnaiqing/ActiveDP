@@ -81,6 +81,20 @@ class SimulateAgent(AbstractAgent):
         self.max_features = max_features  # maximum number of features returned per instance
         self.selected_features = np.repeat(False, self.dataset.n_features())
         self.lexicon = lexicon
+        self.keyword_index_list = {}
+        self.keyword_map = {}
+        for idx in range(len(self.dataset)):
+            for token in self.dataset.xs_token[idx]:
+                if token not in self.keyword_index_list:
+                    self.keyword_index_list[token] = [idx]
+                else:
+                    self.keyword_index_list[token].append(idx)
+
+        for token in self.keyword_index_list:
+            self.keyword_index_list[token] = np.unique(self.keyword_index_list[token])
+
+        for idx, keyword in enumerate(self.dataset.feature_names):
+            self.keyword_map[keyword] = idx
 
     def query(self, idx):
         xi = self.dataset.xs[idx,:]
@@ -90,6 +104,7 @@ class SimulateAgent(AbstractAgent):
 
         xi = xi.flatten()
         yi = self.dataset.ys[idx]
+        x_tokens = self.dataset.xs_token[idx]
 
         p = self.rng.random()
         if p >= self.label_error_rate:
@@ -109,16 +124,24 @@ class SimulateAgent(AbstractAgent):
         if self.criterion == "acc":
             candidate_accs = []
             candidate_covs = []
-            for j in range(self.dataset.n_features()):
-                if xi[j] == 0:
-                    continue
-
-                selected = self.dataset.xs[:,j] == xi[j]
-                if not isinstance(selected, np.ndarray):
-                    selected = selected.toarray().flatten()
+            for token in x_tokens:
+                selected = self.keyword_index_list[token]
+                j = self.keyword_map[token]
                 ys = self.dataset.ys[selected]
-                acc = np.mean(ys == label)  # note: the LF is designed based on user provided label.
-                cov = np.mean(selected)
+                acc = np.mean(ys == label)
+                cov = len(selected) / len(self.dataset)
+                # cov2 = np.mean(self.dataset.xs[:,j] == xi[j])
+
+            # for j in range(self.dataset.n_features()):
+            #     if xi[j] == 0:
+            #         continue
+            #
+            #     selected = self.dataset.xs[:,j] == xi[j]
+            #     if not isinstance(selected, np.ndarray):
+            #         selected = selected.toarray().flatten()
+            #     ys = self.dataset.ys[selected]
+            #     acc = np.mean(ys == label)  # note: the LF is designed based on user provided label.
+            #     cov = np.mean(selected)
 
                 if lf_accurate:
                     # the generated LF is better than random
@@ -175,7 +198,6 @@ class SimulateAgent(AbstractAgent):
 
         else:
             raise ValueError(f"Agent selection criterion {self.criterion} not supported.")
-
 
         return label, selected_features
 

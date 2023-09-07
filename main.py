@@ -2,8 +2,8 @@ import torch
 import argparse
 import numpy as np
 import wandb
-from data_utils_activeDP import load_data
-from data_utils import filter_abstain
+# from data_utils_activeDP import load_data
+from data_utils import filter_abstain, load_data
 from sampler import get_sampler
 from agent import SimulateAgent, SentimentLexicon
 from label_model import get_label_model
@@ -29,7 +29,7 @@ if __name__ == "__main__":
     parser.add_argument('--valid-ratio', type=float, default=0.1)
     parser.add_argument('--valid-sample-frac', type=float, default=None)
     parser.add_argument('--feature', type=str, default='tfidf')
-    parser.add_argument("--stemmer", type=str, default=None)
+    parser.add_argument("--stemmer", type=str, default='porter')
     # framework settings
     parser.add_argument('--num-query', type=int, default=50)
     parser.add_argument('--query-size', type=int, default=1)
@@ -80,25 +80,25 @@ if __name__ == "__main__":
     config_dict["group_id"] = group_id
     config_dict["method"] = "ActiveDP"
     # load dataset
-    # train_dataset, valid_dataset, test_dataset = load_data(data_root=data_dir,
-    #                                                        dataset_name=args.dataset,
-    #                                                        valid_ratio=args.valid_ratio,
-    #                                                        test_ratio=args.test_ratio,
-    #                                                        sample_size=args.dataset_sample_size,
-    #                                                        stemmer=args.stemmer,
-    #                                                        max_ngram=1,
-    #                                                        min_df=1,
-    #                                                        max_df=0.9,
-    #                                                        valid_sample_frac=args.valid_sample_frac,
-    #                                                        )
     train_dataset, valid_dataset, test_dataset = load_data(data_root=data_dir,
                                                            dataset_name=args.dataset,
-                                                           feature=args.feature,
-                                                           test_ratio=args.test_ratio,
                                                            valid_ratio=args.valid_ratio,
-                                                           warmup_ratio=0.0,
-                                                           rand_state=np.random.RandomState(0),
+                                                           test_ratio=args.test_ratio,
+                                                           sample_size=args.dataset_sample_size,
+                                                           stemmer=args.stemmer,
+                                                           max_ngram=1,
+                                                           min_df=1,
+                                                           max_df=0.9,
+                                                           valid_sample_frac=args.valid_sample_frac,
                                                            )
+    # train_dataset, valid_dataset, test_dataset = load_data(data_root=data_dir,
+    #                                                        dataset_name=args.dataset,
+    #                                                        feature=args.feature,
+    #                                                        test_ratio=args.test_ratio,
+    #                                                        valid_ratio=args.valid_ratio,
+    #                                                        warmup_ratio=0.0,
+    #                                                        rand_state=np.random.RandomState(0),
+    #                                                        )
 
     train_dataset.display(split="train")
     warmup_size = 100
@@ -336,26 +336,19 @@ if __name__ == "__main__":
             sampler.update_feedback(idx, label, features)
 
             # update label model and AL model
-            # lfs = sampler.create_label_functions()
-            # if not check_all_class(lfs, train_dataset.n_class):
-            #     label_model = None
-            # else:
-            #     L_train = train_dataset.generate_label_matrix(lfs=lfs)
-            #     L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
-            #     lf_stats = get_lf_stats(L_train, train_dataset.ys)
-            #     L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
-            #     L_val_filtered, y_val_filtered, val_filtered_indices = filter_abstain(L_valid, valid_dataset.ys)
-            #
-            #     if args.label_model == "mv" or len(lfs) < 3 or np.min(y_val_filtered) == np.max(y_val_filtered):
-            #         label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
-            #     elif args.label_model == "snorkel":
-            #         label_model = LabelModel(cardinality=train_dataset.n_class, device=device)
-            #         try:
-            #             label_model.fit(L_train=L_tr_filtered, Y_dev=y_val_filtered, seed=seed)
-            #         except RuntimeError:
-            #             label_model = MajorityLabelVoter(cardinality=train_dataset.n_class)
-            #     else:
-            #         raise ValueError(f"Label model {args.label_model} not supported yet.")
+            lfs = sampler.create_label_functions()
+            if not check_all_class(lfs, train_dataset.n_class):
+                label_model = None
+            else:
+                L_train = train_dataset.generate_label_matrix(lfs=lfs)
+                L_valid = valid_dataset.generate_label_matrix(lfs=lfs)
+                L_tr_filtered, y_tr_filtered, tr_filtered_indices = filter_abstain(L_train, train_dataset.ys)
+
+                if len(lfs) < 3 or args.label_model == "mv":
+                    label_model = get_label_model("mv", cardinality=train_dataset.n_class)
+                else:
+                    label_model = get_label_model(args.label_model, cardinality=train_dataset.n_class)
+                    label_model.fit(L_tr_filtered, L_valid, valid_dataset.ys, tune_params=not args.ablate_lm_tuning)
 
             if len(np.unique(sampler.sampled_labels)) == train_dataset.n_class:
                 al_model = get_al_model(args.al_model, seed)

@@ -209,14 +209,14 @@ class TextDataset(AbstractDataset):
                                                         ngram_range=(1, max_ngram),
                                                         max_df=max_df,
                                                         min_df=min_df,
-                                                        max_features=max_features,
+                                                        max_features=None,
                                                         binary=True)
             else:
                 self.count_vectorizer = CountVectorizer(preprocessor=preprocessor,
                                                         ngram_range=(1, max_ngram),
                                                         max_df=max_df,
                                                         min_df=min_df,
-                                                        max_features=max_features,
+                                                        max_features=None,
                                                         binary=True)
             self.xs = self.count_vectorizer.fit_transform(self.xs_text)
             self.feature_num = self.xs.shape[1]
@@ -227,9 +227,12 @@ class TextDataset(AbstractDataset):
             self.feature_num = self.xs.shape[1]
             self.feature_names = self.count_vectorizer.get_feature_names_out().astype(str)
 
+        analyzer = self.count_vectorizer.build_analyzer()
+        self.xs_token = np.array([analyzer(text) for text in self.xs_text], dtype='object')
+
         if pipeline is None:
             if feature == 'tfidf':
-                vectorizer = TfidfVectorizer(strip_accents='ascii', stop_words='english', max_df=0.9, max_features=1000)
+                vectorizer = TfidfVectorizer(strip_accents='ascii', stop_words='english', max_df=0.9, max_features=max_features)
                 scalar = StandardScaler()
                 self.xs_feature = vectorizer.fit_transform(xs_text).toarray()
                 self.xs_feature = scalar.fit_transform(self.xs_feature)
