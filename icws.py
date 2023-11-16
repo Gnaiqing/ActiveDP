@@ -43,9 +43,8 @@ if __name__ == "__main__":
     parser.add_argument('--use-valid-labels', action="store_true")  # whether use validation set label for tuning
     parser.add_argument('--warmup-size', type=int, default=100)  # only used when use-valid-label set to false
     # sampler settings
-    parser.add_argument("--sampler", type=str, default="passive")
-    parser.add_argument("--lf-sample-method", type=str, default="passive")  # only used when sampler==hybrid
-    parser.add_argument("--al-sample-method", type=str, default="QBC")  # only used when sampler==hybrid
+    parser.add_argument("--sampler", type=str, default="hybrid")
+    parser.add_argument("--alpha", type=float, default=0.5)  # only used when sampler==hybrid
     parser.add_argument("--uncertain-type", type=str, default="entropy")
     # agent settings
     parser.add_argument("--agent", type=str, default="simulate")
@@ -54,20 +53,16 @@ if __name__ == "__main__":
     parser.add_argument("--acc-threshold", type=float, default=0.6)
     parser.add_argument("--label-error-rate", type=float, default=0.0)
     parser.add_argument("--lf-error-rate", type=float, default=0.0)
-    parser.add_argument("--zero-feat", action="store_true")  # possible to return feature with 0 value
     # LF filter settings
-    parser.add_argument("--filter-method", type=str, default=None)
-    parser.add_argument("--ci-alpha", type=float, default=0.01)
+    parser.add_argument("--filter-method", type=str, default="Glasso")
     # active learning settings
-    parser.add_argument("--al-model", type=str, default=None)
-    parser.add_argument("--al-feature", type=str, choices=["tfidf", "bow"], default="tfidf")
+    parser.add_argument("--al-model", type=str, default="logistic")
     # model settings
     parser.add_argument("--label-model", type=str, default="snorkel")
     parser.add_argument("--use-soft-labels", action="store_true")
     parser.add_argument("--end-model", type=str, default="logistic")
     # experiment settings
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--version", type=str, default="0.2")
     parser.add_argument("--display", action="store_true")
     parser.add_argument('--runs', type=int, nargs='+', default=range(5))
 
@@ -121,9 +116,8 @@ if __name__ == "__main__":
         sampler = get_sampler(sampler_type=args.sampler,
                               dataset=train_dataset,
                               seed=seed,
-                              lf_sample_method=args.lf_sample_method,
-                              al_sample_method=args.al_sample_method,
-                              al_feature=args.al_feature)
+                              alpha=args.alpha,
+                              al_feature=args.feature)
 
         sentiment_lexicon = SentimentLexicon(data_dir)
 
@@ -134,7 +128,7 @@ if __name__ == "__main__":
                               lf_error_rate=args.lf_error_rate,
                               criterion=args.criterion,
                               acc_threshold=args.acc_threshold,
-                              zero_feat=args.zero_feat,
+                              zero_feat=False,
                               lexicon=sentiment_lexicon)
 
         al_model = None
@@ -151,7 +145,7 @@ if __name__ == "__main__":
                                                                      drop_const_columns=True)
                     structure_learner = StructureDiscovery(labeled_dataset)
                     filtered_features = structure_learner.get_neighbor_nodes(method=args.filter_method,
-                                                                             alpha=args.ci_alpha,
+                                                                             alpha=0.01,
                                                                              display=args.display)
 
                     filtered_feature_indices = []
@@ -228,15 +222,9 @@ if __name__ == "__main__":
                             raise ValueError(f"AL model {args.al_model} not supported.")
 
                         labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
-                        if args.al_feature == "tfidf":
-                            al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
-                            tr_features = train_dataset.xs_feature
-                            val_features = valid_dataset.xs_feature
-                        else:
-                            al_model.fit(labeled_dataset.xs, labeled_dataset.ys)
-                            tr_features = train_dataset.xs
-                            val_features = valid_dataset.xs
-
+                        al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
+                        tr_features = train_dataset.xs_feature
+                        val_features = valid_dataset.xs_feature
                         if args.use_valid_labels:
                             val_labels = valid_dataset.ys
                             al_val_probs = al_model.predict_proba(val_features)
@@ -335,14 +323,11 @@ if __name__ == "__main__":
                 y_probs = None
 
             if args.sampler == "hybrid":
-                al_sample_prob = al_coverage / (al_coverage + dp_coverage)
-                idx = sampler.sample(al_sample_prob=al_sample_prob, al_model=al_model, y_probs=y_probs)
+                idx = sampler.sample(al_model=al_model, y_probs=y_probs)
             elif args.sampler == "SEU":
                 idx = sampler.sample(y_probs=y_probs)
             else:
                 idx = sampler.sample(al_model=al_model)
-            if idx == -1:
-                raise ValueError(f"No remaining data for sampling.")
 
             # query the agent
             label, features = agent.query(idx)
@@ -383,10 +368,7 @@ if __name__ == "__main__":
                 al_model = None
             elif al_model is not None:
                 labeled_dataset = sampler.create_labeled_dataset(features="all", drop_const_columns=False)
-                if args.al_feature == "tfidf":
-                    al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
-                else:
-                    al_model.fit(labeled_dataset.xs, labeled_dataset.ys)
+                al_model.fit(labeled_dataset.xs_feature, labeled_dataset.ys)
 
             # display query results
             print("Query: ", train_dataset.xs_text[idx])

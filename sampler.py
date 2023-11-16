@@ -4,13 +4,13 @@ from alipy import ToolBox
 import abc
 
 
-def get_sampler(sampler_type, dataset, seed, lf_sample_method=None, al_sample_method=None, al_feature="tfidf"):
+def get_sampler(sampler_type, dataset, seed, al_feature="tfidf", alpha=0.5):
     if sampler_type in ["uncertain", "QBC", "QUIRE", "EER", "density", "LAL"]:
         return ActiveSampler(dataset, al_feature, sampler_type, seed)
-    elif sampler_type in ["passive", "count", "SEU"]:
+    elif sampler_type in ["passive", "SEU"]:
         return LFSampler(dataset, sampler_type, seed)
     elif sampler_type == "hybrid":
-        return HybridSampler(dataset, lf_sample_method, al_sample_method, al_feature, seed)
+        return HybridSampler(dataset, seed, alpha=alpha)
     else:
         raise ValueError(f"Sampler {sampler_type} not supported.")
 
@@ -217,125 +217,39 @@ class ActiveSampler(Sampler):
 
 class HybridSampler(Sampler):
     """
-    Sample based on exploration(for LF discovery) or exploitation (for active learning) mode.
+    Sample based on uncertainty from active learning model and label model.
     """
-    def __init__(self, dataset, lf_sample_method, al_sample_method, al_feature, seed):
+    def __init__(self, dataset, seed, alpha=0.5):
         super(HybridSampler, self).__init__(dataset, seed)
-        self.lf_sample_method = lf_sample_method
-        self.al_sample_method = al_sample_method
-        self.al_feature = al_feature
         self.rng = np.random.default_rng(seed)
-        # record data for active learning
-        if self.al_feature == "tfidf":
-            train_X = dataset.xs_feature
-        else:
-            train_X = dataset.xs
+        self.dataset = dataset
+        self.alpha = alpha
+        self.labeled_index = np.array([], dtype=int)
+        self.unlabeled_index = np.arange(len(dataset))
 
-        train_y = dataset.ys
-        self.alibox = ToolBox(X=train_X, y=train_y, query_type='AllLabels')
-        self.train_index = self.alibox.IndexCollection(np.arange(len(dataset)))
-        self.labeled_index = self.alibox.IndexCollection([0])
-        self.labeled_index.difference_update([0])
-        self.unlabeled_index = self.alibox.IndexCollection(np.arange(len(dataset)))
-
-    def sample(self, **kwargs):
-        is_candidate = np.repeat(True, len(self.dataset))
-        if len(self.sampled_idxs) > 0:
-            is_candidate[np.array(self.sampled_idxs)] = False
-
-        unlabeled_index = np.arange(len(self.dataset))[is_candidate]
-        if len(unlabeled_index) == 0:
-            return -1
-
-        if "al_sample_prob" in kwargs:
-            thres = kwargs["al_sample_prob"]
-        else:
-            thres = 0.5
-
-        p = self.rng.random()
-        if p < thres:
-            sample_method = self.al_sample_method
-            assert "al_model" in kwargs
-            al_model = kwargs["al_model"]
-        else:
-            sample_method = self.lf_sample_method
-
-        if sample_method == "passive":
-            idx = self.rng.choice(unlabeled_index)
-        elif sample_method == "SEU":
-            # select by expected utility (Nemo)
-            assert "y_probs" in kwargs
-            if kwargs["y_probs"] is None:
-                # fall back to passive sampling
-                idx = self.rng.choice(unlabeled_index)
+    def sample(self, al_model=None, y_probs=None):
+        if al_model is None:
+            if y_probs is None:
+                idx = self.rng.choice(self.unlabeled_index)
             else:
-                uncertainty = entropy(kwargs["y_probs"], axis=1)[unlabeled_index]
-                y_preds = np.argmax(kwargs["y_probs"], axis=1)[unlabeled_index]
-                feature_mat = self.dataset.xs[unlabeled_index, :].toarray()
-                wl_mat = []
-                for i in range(self.dataset.n_class):
-                    wl = - np.ones_like(feature_mat)
-                    wl[feature_mat != 0] = i
-                    wl_mat.append(wl)
-                wl_mat = np.hstack(wl_mat)
-
-                score = np.zeros_like(wl_mat)
-                score[wl_mat != -1] = -1
-                score[y_preds.reshape(-1, 1) == wl_mat] = 1  # record whether the weak labels are correct
-                lf_score = np.sum(uncertainty.reshape(-1, 1) * score, axis=0)  # LF utility score
-                lf_acc = np.sum(y_preds.reshape(-1, 1) == wl_mat, axis=0) / np.sum(wl_mat != -1, axis=0)
-                lf_mask = wl_mat != -1  # whether a user may design LF based on x
-                lf_probs = lf_mask * lf_acc + 1e-6
-                lf_probs = lf_probs / np.sum(lf_probs, axis=1, keepdims=True)
-                phi = np.sum(lf_score * lf_probs, axis=1)
-                idx = unlabeled_index[np.argmax(phi)]
-        elif sample_method == "uncertain":
-            strategy = self.alibox.get_query_strategy(strategy_name='QueryInstanceUncertainty')
-            idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index,
-                                  model=al_model,
-                                  batch_size=1)[0]
-
-        elif sample_method == "QBC":
-            strategy = self.alibox.get_query_strategy(strategy_name='QueryInstanceQBC')
-            idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index,
-                                  model=al_model,
-                                  batch_size=1)[0]
-        elif sample_method == "EER":
-            strategy = self.alibox.get_query_strategy(strategy_name='QueryExpectedErrorReduction')
-            idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index.random_sampling(rate=0.1),
-                                  model=al_model,
-                                  batch_size=1)[0]
-
-        elif sample_method == "QUIRE":
-            strategy = self.alibox.get_query_strategy(strategy_name='QueryInstanceQUIRE',
-                                                      train_idx=self.train_index)
-            idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index.random_sampling(rate=0.1),
-                                  model=al_model,
-                                  batch_size=1)[0]
-        elif sample_method == "density":
-            strategy = self.alibox.get_query_strategy(strategy_name="QueryInstanceGraphDensity",
-                                                      train_idx=self.train_index)
-            idx = strategy.select(label_index=self.labeled_index,
-                                  unlabel_index=self.unlabeled_index,
-                                  model=al_model,
-                                  batch_size=1)[0]
-        elif sample_method == "LAL":
-            lal = self.alibox.get_query_strategy(strategy_name="QueryInstanceLAL", cls_est=10, train_slt=False)
-            lal.download_data()
-            lal.train_selector_from_file(reg_est=30, reg_depth=5)
-            idx = lal.select(label_index=self.labeled_index,
-                             unlabel_index=self.unlabeled_index.random_sampling(rate=0.1),
-                             model=al_model,
-                             batch_size=1)[0]
-
+                uncertainty = entropy(y_probs, axis=1)[self.unlabeled_index]
+                pos = np.argmax(uncertainty)
+                idx = self.unlabeled_index[pos]
         else:
-            raise ValueError(f"Sample method {sample_method} not supported.")
+            al_probs = al_model.predict_proba(self.dataset.xs_feature)
+            if y_probs is None:
+                uncertainty = entropy(al_probs, axis=1)[self.unlabeled_index]
+                pos = np.argmax(uncertainty)
+                idx = self.unlabeled_index[pos]
+            else:
+                al_uncertainty = entropy(al_probs, axis=1)[self.unlabeled_index]
+                dp_uncertainty = entropy(y_probs, axis=1)[self.unlabeled_index]
+                uncertainty = np.power(al_uncertainty, self.alpha) * np.power(dp_uncertainty, 1-self.alpha)
+                pos = np.argmax(uncertainty)
+                idx = self.unlabeled_index[pos]
 
-        self.labeled_index.update([idx])
-        self.unlabeled_index.difference_update([idx])
+        self.labeled_index = np.union1d(self.labeled_index, idx)
+        self.unlabeled_index = np.setdiff1d(self.unlabeled_index, idx)
         self.sampled_idxs.append(idx)
         return idx
+
